@@ -794,6 +794,8 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
 		return;
 	}
 
+	pthread_mutex_lock(&iqready_lock);
+
 	// Convert to float and copy data to buffer, offset by coefficient length * 2.
 	// The downsample routine will move the previous last coefficient length * 2
 	// to the beginning of the buffer. This is because of the FIR filter length, the
@@ -803,7 +805,6 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
 		rcb->iq_buf[j] = rtl_lut[buf[i]] * mcb.signal_multiplier[rcb->rcvr_num];
  		// rcb->iq_buf[j] = (float)(buf[i]-127);
 
-	pthread_mutex_lock(&iqready_lock);
 	rcvr_flags |= rcb->rcvr_mask;
 	pthread_cond_broadcast(&iqready_cond);
 	pthread_mutex_unlock(&iqready_lock);
@@ -1301,11 +1302,6 @@ main(int argc, char* argv[]) {
 			exit(0);
 #endif
 
-			pthread_mutex_lock(&done_send_lock);
-			send_flags = 0;
-			pthread_cond_broadcast(&done_send_cond);
-			pthread_mutex_unlock(&done_send_lock);
-
 			payload[4] = (hpsdr_sequence >> 24) & 0xff;
 			payload[5] = (hpsdr_sequence >> 16) & 0xff;
 			payload[6] = (hpsdr_sequence >> 8) & 0xff;
@@ -1321,6 +1317,11 @@ main(int argc, char* argv[]) {
 			}
 
 			hpsdr_sequence += 1;
+
+			pthread_mutex_lock(&done_send_lock);
+			send_flags = 0;
+			pthread_cond_broadcast(&done_send_cond);
+			pthread_mutex_unlock(&done_send_lock);
 		}
 	}
 
