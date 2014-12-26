@@ -59,9 +59,9 @@
 #include <xmmintrin.h>
 #endif
 
-#define PRG_VERSION "1.4" // see ChangeLog for history
+#define PRG_VERSION "1.5" // see ChangeLog for history
 
-#define HERMES_FW_VER 25    //2.5
+#define HERMES_FW_VER 26    //2.5
 #define PORT 1024
 #define MAX_BUFFER_LEN 2048
 #define HPSDR_FRAME_LEN 1032

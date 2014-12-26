@@ -270,7 +270,7 @@ hpsdrsim_reveal(void) {
 		} //else printf("Received %d bytes, waiting to be discovered...\n", bytes_read);
 
 		// the discovery process is complete, continue on
-		if((bytes_read > 1000) && revealed) {
+		if((bytes_read == 64 || bytes_read > 1000) && revealed) {
 			ready = true;
 			continue;
 		}
