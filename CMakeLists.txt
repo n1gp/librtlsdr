@@ -64,12 +64,16 @@ find_package(PkgConfig)
 find_package(LibUSB)
 set(THREADS_USE_PTHREADS_WIN32 true)
 find_package(Threads)
+find_package(FFTW3)
 
 if(NOT LIBUSB_FOUND)
     message(FATAL_ERROR "LibUSB 1.0 required to compile rtl-sdr")
 endif()
 if(NOT THREADS_FOUND)
     message(FATAL_ERROR "pthreads(-win32) required to compile rtl-sdr")
+endif()
+if(NOT FFTW3_FOUND)
+    message(FATAL_ERROR "fftw3 (-win32) required to compile rtl-sdr")
 endif()
 ########################################################################
 # Setup the include and linker paths

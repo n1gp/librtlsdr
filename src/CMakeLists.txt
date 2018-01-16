@@ -77,9 +77,9 @@ endif()
 add_executable(rtl_sdr rtl_sdr.c)
 add_executable(rtl_tcp rtl_tcp.c)
 if(WIN32)
-add_executable(rtl_hpsdr rtl_hpsdr.c coeff.c downsample.c)
+add_executable(rtl_hpsdr rtl_hpsdr.c downsample.c)
 else()
-add_executable(rtl_hpsdr rtl_hpsdr.c coeff.c downsample.c local_sound.c)
+add_executable(rtl_hpsdr rtl_hpsdr.c downsample.c local_sound.c)
 endif()
 add_executable(rtl_test rtl_test.c)
 add_executable(rtl_fm rtl_fm.c)
@@ -99,6 +99,7 @@ target_link_libraries(rtl_tcp rtlsdr_shared convenience_static
 target_link_libraries(rtl_hpsdr rtlsdr_shared convenience_static
     ${LIBUSB_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
+    ${FFTW3_LIBRARIES}
 )
 target_link_libraries(rtl_test rtlsdr_shared convenience_static
     ${LIBUSB_LIBRARIES}
@@ -124,7 +125,7 @@ if(UNIX)
 target_link_libraries(rtl_fm m)
 target_link_libraries(rtl_adsb m)
 target_link_libraries(rtl_power m)
-target_link_libraries(rtl_hpsdr asound)
+target_link_libraries(rtl_hpsdr asound fftw3 m)
 if(APPLE)
     target_link_libraries(rtl_test m)
 else()
@@ -199,11 +200,36 @@ if( CMAKE_COMPILER_IS_GNUCC )
 		set_property(TARGET rtl_hpsdr APPEND PROPERTY COMPILE_FLAGS ${INTRIN_FLAGS} )
 		message(STATUS "Found SSE2 extensions, using flags: ${INTRIN_FLAGS}")
 	elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES armv7*)
-		set(INTRIN_FLAGS "-DINCLUDE_NEON -mfpu=neon -mfloat-abi=softfp -ftree-vectorize")
+		set(INTRIN_FLAGS "-DINCLUDE_NEON -O3 -funroll-loops -march=armv7-a -mfloat-abi=hard -mfpu=neon")
+		#set(INTRIN_FLAGS "-DINCLUDE_NEON -march=armv7-a -mfloat-abi=hard -mfpu=neon -mtune=cortex-a9")
 		set_property(TARGET rtl_hpsdr APPEND PROPERTY COMPILE_FLAGS ${INTRIN_FLAGS} )
 		message(STATUS "Found ARM NEON extensions, using flags: ${INTRIN_FLAGS}")
 	endif()
 endif()
+
+PROJECT(VERSIONHEADER C)
+FIND_PACKAGE(Git)
+FILE(WRITE ${CMAKE_BINARY_DIR}/version.h.in
+"\#define GITVERSION \"@GIT_COMMIT_HASH@\"\n"
+)
+FILE(WRITE ${CMAKE_BINARY_DIR}/version.cmake
+"EXECUTE_PROCESS(
+	COMMAND git log -1 --format=%h
+	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+	OUTPUT_VARIABLE GIT_COMMIT_HASH
+	OUTPUT_STRIP_TRAILING_WHITESPACE
+ )
+ CONFIGURE_FILE(\${SRC} \${DST} @ONLY)
+")
+INCLUDE_DIRECTORIES(${CMAKE_BINARY_DIR})
+#ADD_EXECUTABLE(main main.c)
+ADD_CUSTOM_TARGET(
+	version
+	${CMAKE_COMMAND} -D SRC=${CMAKE_BINARY_DIR}/version.h.in
+	-D DST=${CMAKE_BINARY_DIR}/version.h
+	-P ${CMAKE_BINARY_DIR}/version.cmake
+)
+ADD_DEPENDENCIES(rtl_hpsdr version)
 
 ########################################################################
 # Install built library files & utilities

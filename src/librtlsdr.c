@@ -126,6 +126,7 @@ struct rtlsdr_dev {
 };
 
 void rtlsdr_set_gpio_bit(rtlsdr_dev_t *dev, uint8_t gpio, int val);
+int rtlsdr_set_if_freq(rtlsdr_dev_t *dev, uint32_t freq);
 
 /* generic tuner interface functions, shall be moved to the tuner implementations */
 int e4000_init(void *dev) {
@@ -161,17 +162,25 @@ int e4000_set_gain(void *dev, int gain) {
 #if 0
 	int enhgain = (gain - 420);
 #endif
-	if(e4k_set_lna_gain(&devt->e4k_s, min(300, gain - mixgain * 10)) == -EINVAL)
-		return -1;
-	if(e4k_mixer_gain_set(&devt->e4k_s, mixgain) == -EINVAL)
-		return -1;
-#if 0 /* enhanced mixer gain seems to have no effect */
-	if(enhgain >= 0)
-		if(e4k_set_enh_gain(&devt->e4k_s, enhgain) == -EINVAL)
+	/* Use only (the modified) set_lna_gain if the user
+	   asked for linearity or sensitivity. */
+	if (devt->e4k_s.gain_mode <= GAIN_MODE_MANUAL) {
+		if (e4k_set_lna_gain(&devt->e4k_s, min(300, gain - mixgain * 10)) == -EINVAL)
 			return -1;
+		if (e4k_mixer_gain_set(&devt->e4k_s, mixgain) == -EINVAL)
+			return -1;
+#if 0 /* enhanced mixer gain seems to have no effect */
+		/* SM5BSZ: enhanced gain should affect how the AGC turns down the gain */
+		if (enhgain >= 0)
+			if (e4k_set_enh_gain(&devt->e4k_s, enhgain) == -EINVAL)
+				return -1;
 #endif
+		return 0;
+	}
+	e4k_set_lna_mixer_if_gain(&devt->e4k_s, gain);
 	return 0;
 }
+
 int e4000_set_if_gain(void *dev, int stage, int gain) {
 	rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
 	return e4k_if_gain_set(&devt->e4k_s, (uint8_t)stage, (int8_t)(gain / 10));
@@ -238,14 +247,21 @@ int r820t_set_freq(void *dev, uint32_t freq) {
 	rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
 	return r82xx_set_freq(&devt->r82xx_p, freq);
 }
-int r820t_set_bw(void *dev, int bw) { return 0; }
+int r820t_set_bw(void *dev, int bw) {
+	int rc;
+	rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
+	rc=r82xx_set_bandwidth(&devt->r82xx_p, bw, devt->rate);
+	if(rc < 0)
+		return rc;
+	return rtlsdr_set_if_freq(dev, rc);
+}
 int r820t_set_gain(void *dev, int gain) {
 	rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
-	return r82xx_set_gain(&devt->r82xx_p, 1, gain);
+	return r82xx_set_gain(&devt->r82xx_p, gain);
 }
 int r820t_set_gain_mode(void *dev, int manual) {
 	rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
-	return r82xx_set_gain(&devt->r82xx_p, manual, 0);
+	return r82xx_enable_manual_gain(&devt->r82xx_p, manual);
 }
 
 /* definition order must match enum rtlsdr_tuner */
@@ -940,22 +956,38 @@ enum rtlsdr_tuner rtlsdr_get_tuner_type(rtlsdr_dev_t *dev)
 	return dev->tuner_type;
 }
 
+int rtlsdr_get_tuner_bandwidths(rtlsdr_dev_t *dev, int *bandwidths)
+{
+	const int *ptr;
+	int len;
+	const int unknown_bandwidths[] = { 0 /* no bandwidths known */ };
+
+	if (!dev)
+		return -1;
+	switch (dev->tuner_type) {
+		case RTLSDR_TUNER_R820T:
+		case RTLSDR_TUNER_R828D:
+			r82xx_get_tuner_bandwidths(&dev->r82xx_p, &ptr, &len);
+			break;
+		default:
+			ptr = unknown_bandwidths; len = sizeof(unknown_bandwidths);
+			break;
+	}
+	if (bandwidths) { /* buffer provided, copy data */
+		memcpy(bandwidths, ptr, len);
+	}
+	return len / sizeof(int);
+}
+
 int rtlsdr_get_tuner_gains(rtlsdr_dev_t *dev, int *gains)
 {
 	/* all gain values are expressed in tenths of a dB */
-	const int e4k_gains[] = { -10, 15, 40, 65, 90, 115, 140, 165, 190, 215,
-				  240, 290, 340, 420 };
 	const int fc0012_gains[] = { -99, -40, 71, 179, 192 };
 	const int fc0013_gains[] = { -99, -73, -65, -63, -60, -58, -54, 58, 61,
 				       63, 65, 67, 68, 70, 71, 179, 181, 182,
 				       184, 186, 188, 191, 197 };
 	const int fc2580_gains[] = { 0 /* no gain values */ };
-	const int r82xx_gains[] = { 0, 9, 14, 27, 37, 77, 87, 125, 144, 157,
-				     166, 197, 207, 229, 254, 280, 297, 328,
-				     338, 364, 372, 386, 402, 421, 434, 439,
-				     445, 480, 496 };
 	const int unknown_gains[] = { 0 /* no gain values */ };
-
 	const int *ptr = NULL;
 	int len = 0;
 
@@ -964,7 +996,7 @@ int rtlsdr_get_tuner_gains(rtlsdr_dev_t *dev, int *gains)
 
 	switch (dev->tuner_type) {
 	case RTLSDR_TUNER_E4000:
-		ptr = e4k_gains; len = sizeof(e4k_gains);
+		e4k_get_tuner_gains(&dev->e4k_s, &ptr, &len);
 		break;
 	case RTLSDR_TUNER_FC0012:
 		ptr = fc0012_gains; len = sizeof(fc0012_gains);
@@ -977,7 +1009,7 @@ int rtlsdr_get_tuner_gains(rtlsdr_dev_t *dev, int *gains)
 		break;
 	case RTLSDR_TUNER_R820T:
 	case RTLSDR_TUNER_R828D:
-		ptr = r82xx_gains; len = sizeof(r82xx_gains);
+		r82xx_get_tuner_gains(&dev->r82xx_p, &ptr, &len);
 		break;
 	default:
 		ptr = unknown_gains; len = sizeof(unknown_gains);
@@ -992,6 +1024,21 @@ int rtlsdr_get_tuner_gains(rtlsdr_dev_t *dev, int *gains)
 
 		return len / sizeof(int);
 	}
+}
+
+int rtlsdr_set_tuner_bandwidth(rtlsdr_dev_t *dev, int bandwidth)
+{
+	int r = 0;
+
+	if (!dev || !dev->tuner)
+		return -1;
+
+	if (dev->tuner->set_bw) {
+		rtlsdr_set_i2c_repeater(dev, 1);
+		r = dev->tuner->set_bw((void *)dev, bandwidth);
+		rtlsdr_set_i2c_repeater(dev, 0);
+	}
+	return r;
 }
 
 int rtlsdr_set_tuner_gain(rtlsdr_dev_t *dev, int gain)
@@ -1037,6 +1084,65 @@ int rtlsdr_set_tuner_if_gain(rtlsdr_dev_t *dev, int stage, int gain)
 	}
 
 	return r;
+}
+
+int rtlsdr_get_tuner_stage_gains(rtlsdr_dev_t *dev, uint8_t stage, int32_t *gains, char *description)
+{
+	const int32_t *gainptr = NULL;
+	const char *desc;
+	int len = 0;
+	rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
+
+	if (!dev)
+		return -1;
+
+	switch (dev->tuner_type) {
+	case RTLSDR_TUNER_E4000:
+		len = e4k_get_tuner_stage_gains(&devt->e4k_s, stage, &gainptr, &desc);
+		break;
+	case RTLSDR_TUNER_R820T:
+	case RTLSDR_TUNER_R828D:
+		len = r82xx_get_tuner_stage_gains(&devt->r82xx_p, stage, &gainptr, &desc);
+		break;
+	default:
+		return -1;
+	}
+
+	if (description) {
+		strncpy(description, desc, DESCRIPTION_MAXLEN-1);
+		description[DESCRIPTION_MAXLEN-1] = 0;
+	}
+
+	if (!gains) { /* no buffer provided, just return the count */
+		return len;
+	} else {
+		if (len)
+			memcpy(gains, gainptr, len*sizeof(*gains));
+		return len;
+	}
+}
+
+int rtlsdr_set_tuner_stage_gain(rtlsdr_dev_t *dev, uint8_t stage, int32_t gain)
+{
+	int rc;
+	rtlsdr_dev_t* devt = (rtlsdr_dev_t*)dev;
+
+	if (!dev)
+		return -1;
+	rtlsdr_set_i2c_repeater(dev, 1);
+	switch (dev->tuner_type) {
+		case RTLSDR_TUNER_E4000:
+			rc = e4k_set_tuner_stage_gain(&devt->e4k_s, stage, gain);
+			break;
+		case RTLSDR_TUNER_R820T:
+		case RTLSDR_TUNER_R828D:
+			rc = r82xx_set_tuner_stage_gain(&devt->r82xx_p, stage, gain);
+			break;
+		default:
+			rc = -1;
+	}
+	rtlsdr_set_i2c_repeater(dev, 0);
+	return rc;
 }
 
 int rtlsdr_set_tuner_gain_mode(rtlsdr_dev_t *dev, int mode)
@@ -1185,7 +1291,7 @@ int rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)
 		/* opt_adc_iq = 0, default ADC_I/ADC_Q datapath */
 		r |= rtlsdr_demod_write_reg(dev, 0, 0x06, 0x80, 1);
 
-		fprintf(stderr, "Disabled direct sampling mode\n");
+		//		fprintf(stderr, "Disabled direct sampling mode\n");
 		dev->direct_sampling = 0;
 	}
 
@@ -1673,6 +1779,8 @@ int rtlsdr_wait_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx)
 	return rtlsdr_read_async(dev, cb, ctx, 0, 0);
 }
 
+static int _rtlsdr_free_async_buffers(rtlsdr_dev_t *dev);
+
 static int _rtlsdr_alloc_async_buffers(rtlsdr_dev_t *dev)
 {
 	unsigned int i;
@@ -1681,19 +1789,49 @@ static int _rtlsdr_alloc_async_buffers(rtlsdr_dev_t *dev)
 		return -1;
 
 	if (!dev->xfer) {
-		dev->xfer = malloc(dev->xfer_buf_num *
+		dev->xfer = (struct libusb_transfer **)malloc(dev->xfer_buf_num *
 				   sizeof(struct libusb_transfer *));
 
-		for(i = 0; i < dev->xfer_buf_num; ++i)
+		if (dev->xfer == NULL)
+			return -1;
+
+		for(i = 0; i < dev->xfer_buf_num; ++i) {
 			dev->xfer[i] = libusb_alloc_transfer(0);
+
+			if (dev->xfer[i] == NULL) {
+				while (i>0) {
+					libusb_free_transfer(dev->xfer[--i]);
+					dev->xfer[i] = NULL;
+				}
+				free(dev->xfer);
+				dev->xfer = NULL;
+				return -1;
+			}
+		}
 	}
 
 	if (!dev->xfer_buf) {
-		dev->xfer_buf = malloc(dev->xfer_buf_num *
+		dev->xfer_buf = (unsigned char **)malloc(dev->xfer_buf_num *
 					   sizeof(unsigned char *));
+		if (dev->xfer_buf == NULL) {
+			_rtlsdr_free_async_buffers(dev);
+			return -1;
+		}
 
-		for(i = 0; i < dev->xfer_buf_num; ++i)
-			dev->xfer_buf[i] = malloc(dev->xfer_buf_len);
+		for(i = 0; i < dev->xfer_buf_num; ++i) {
+			dev->xfer_buf[i] = (unsigned char*)malloc(dev->xfer_buf_len);
+
+			if (dev->xfer_buf[i] == NULL) {
+				while(i>0) {
+					free(dev->xfer_buf[--i]);
+					dev->xfer_buf[i] = NULL;
+				}
+				free(dev->xfer_buf);
+				dev->xfer_buf = NULL;
+				_rtlsdr_free_async_buffers(dev);
+				return -1;
+			}
+		}
 	}
 
 	return 0;
@@ -1745,9 +1883,6 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 	if (RTLSDR_INACTIVE != dev->async_status)
 		return -2;
 
-	dev->async_status = RTLSDR_RUNNING;
-	dev->async_cancel = 0;
-
 	dev->cb = cb;
 	dev->cb_ctx = ctx;
 
@@ -1761,9 +1896,21 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 	else
 		dev->xfer_buf_len = DEFAULT_BUF_LENGTH;
 
-	_rtlsdr_alloc_async_buffers(dev);
+	/* Check the error code. */
+	if(_rtlsdr_alloc_async_buffers(dev) < 0)
+		return -1;
+
+	dev->async_status = RTLSDR_RUNNING;
+	dev->async_cancel = 0;
 
 	for(i = 0; i < dev->xfer_buf_num; ++i) {
+	/* Sleep a little here. 
+	   Will avoid crash in case there are many small buffers. */
+#ifdef _WIN32
+		Sleep(1);
+#else
+		usleep(1000);
+#endif
 		libusb_fill_bulk_transfer(dev->xfer[i],
 					  dev->devh,
 					  0x81,
@@ -1786,7 +1933,7 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 							   &dev->async_cancel);
 		if (r < 0) {
 			/*fprintf(stderr, "handle_events returned: %d\n", r);*/
-			if (r == LIBUSB_ERROR_INTERRUPTED) /* stray signal */
+			if (r == LIBUSB_ERROR_INTERRUPTED || r==-1) /* stray signal */
 				continue;
 			break;
 		}

@@ -36,6 +36,7 @@
 #include <netdb.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <fftw3.h>
 #else
 #include <winsock2.h>
 #include <windows.h>
@@ -59,32 +60,29 @@
 #include <xmmintrin.h>
 #endif
 
-#define PRG_VERSION "1.5" // see ChangeLog for history
+#define PRG_VERSION "1.8" // see ChangeLog for history
 
-#define HERMES_FW_VER 26    //2.5
+#define HERMES_FW_VER 26    //2.6
 #define PORT 1024
 #define MAX_BUFFER_LEN 2048
 #define HPSDR_FRAME_LEN 1032
 #define IQ_FRAME_DATA_LEN 63
+#define RTL_BANDWIDTH 300000   // Tuner set to 400 Khz IF BW 
 #define DOWNSAMPLE_192 8    // downsample value used to get 192khz
 #define RTL_SAMPLE_RATE (192000 * DOWNSAMPLE_192)
-#define RTL_READ_COUNT (2048 * DOWNSAMPLE_192)
+#define RTL_READ_COUNT (16384 * DOWNSAMPLE_192)
 #define MAX_RCVRS 8     // cuSDR64 limits this to 7
 #define IQ_FRAME_DATA_LEN 63
-#define MAXSTR 64
+#define MAXSTR 128
+#define FFT_SIZE 65536
+#define CAL_STATE_EXIT	MAX_RCVRS
+#define CAL_STATE_0	-1
+#define CAL_STATE_1	-2
+#define CAL_STATE_2	-3
+#define CAL_STATE_3	-4
 
-#define COEFF3072_H_16_LENGTH 16
-#define COEFF1536_H_32_LENGTH 32
-#define COEFF1536_H_64_LENGTH 64
-float coeff3072_768_H_16[COEFF3072_H_16_LENGTH];
-float coeff1536_384_H_32[COEFF1536_H_32_LENGTH];
-float coeff1536_192_H_32[COEFF1536_H_32_LENGTH];
-float coeff1536_96_H_32[COEFF1536_H_32_LENGTH];
-float coeff1536_48_H_32[COEFF1536_H_32_LENGTH];
-float coeff1536_384_H_64[COEFF1536_H_64_LENGTH];
-float coeff1536_192_H_64[COEFF1536_H_64_LENGTH];
-float coeff1536_96_H_64[COEFF1536_H_64_LENGTH];
-float coeff1536_48_H_64[COEFF1536_H_64_LENGTH];
+#define RTL_MODE_SKIMMER 0
+#define RTL_MODE_WSPR    1
 
 struct main_cb {
 	int total_num_rcvrs;
@@ -94,38 +92,50 @@ struct main_cb {
 	int frame_offset1;
 	int frame_offset2;
 	int output_rate;
-	int length_fir;
-	char sound_dev[32];
-	char ip_addr[32];
+	int up_xtal;
+	char sound_dev[MAXSTR];
+	char ip_addr[MAXSTR];
+	char serialstr[MAXSTR];
 
 	// the last array member is used to remember last settings
 	int agc_mode[MAX_RCVRS + 1];
 	int direct_mode[MAX_RCVRS + 1];
 	int gain[MAX_RCVRS + 1];
 	int freq_offset[MAX_RCVRS + 1];
+        int center_freq[MAX_RCVRS + 1];
+        int if_bw[MAX_RCVRS + 1];
+        int gain_mode[MAX_RCVRS + 1];
+       
+	// Added to handle dynamic config file updates
+	int last_agc_mode[MAX_RCVRS + 1];
+	int last_direct_mode[MAX_RCVRS + 1];
+	int last_gain[MAX_RCVRS + 1];
+	int last_freq_offset[MAX_RCVRS + 1];
+        int last_center_freq[MAX_RCVRS + 1];
+        int last_if_bw[MAX_RCVRS + 1];
+        int last_gain_mode[MAX_RCVRS + 1];
+       
+
 	int rcvr_order[MAX_RCVRS + 1];
-	int signal_multiplier[MAX_RCVRS + 1];
+	int signal_multiplier;
+	int cal_state;
+	int calibrate;
+        int rtl_mode;
 
 	struct timeb freq_ltime[MAX_RCVRS];
 	struct timeb freq_ttime[MAX_RCVRS];
 
-	// filter coefficient table pointers
-	float* align1536_48_H;
-	float* align1536_96_H;
-	float* align1536_192_H;
-	float* align1536_384_H;
-	float* align3072_768_H;
-	float* coeff_48;
-	float* coeff_96;
-	float* coeff_192;
-	float* coeff_384;
-	float* coeff_768;
+	fftw_complex fftIn[sizeof(fftw_complex) * FFT_SIZE];
+	fftw_complex fftOut[sizeof(fftw_complex) * FFT_SIZE];
+	fftw_plan fftPlan;
+	float fft_averaged[FFT_SIZE * sizeof(float)];
 
 	struct rcvr_cb {
 		float dest[4] __attribute__((aligned(16)));
-
 		int rcvr_num;
 		int new_freq;
+		int curr_freq;
+		int output_rate;
 		u_int rcvr_mask;
 		rtlsdr_dev_t* rtldev;
 		struct main_cb* mcb;
@@ -136,9 +146,8 @@ struct main_cb {
 		int iqSamples_remaining;
 		float iqSamples[(RTL_READ_COUNT + (IQ_FRAME_DATA_LEN * 2))];
 
-		u_char rtl_buf[RTL_READ_COUNT];
+		float rtl_buf[RTL_READ_COUNT];
 		float* iq_buf;
-		float* iq_buf_final;
 	} rcb[MAX_RCVRS];
 };
 
@@ -149,6 +158,7 @@ void load_packet(struct rcvr_cb* rcb);
 void rtl_sighandler(int signum);
 int get_addr(int sock);
 void hpsdrsim_reveal(void);
+int parse_config(char* conf_file);
 
 pthread_t hpsdrsim_thread_id;
 void* hpsdrsim_thread(void* arg);

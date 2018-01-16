@@ -22,189 +22,157 @@
 #ifdef INCLUDE_NEON
 #define vector_type float32x4_t
 #define vector_zero vmovq_n_f32(0)
+#define vector_load(x) vld1q_f32(x)
 #define vector_mac(x,y,z) vmlaq_f32((x), vld1q_f32((y)), (z))
-#define vector_store(x,y,z) vst1q_f32((x), vaddq_f32((y), vcombine_f32(vget_low_f32((z)), vget_high_f32((y)))))
+#define vector_store(x,y) vst1q_f32((x), (y))
 #elif defined INCLUDE_SSE2
 #define vector_type __m128
 #define vector_zero _mm_setzero_ps()
+#define vector_load(x) _mm_load_ps(x)
 #define vector_mac(x,y,z) _mm_add_ps((x), _mm_mul_ps(_mm_load_ps((y)), (z)))
-#define vector_store(x,y,z) _mm_store_ps((x), _mm_add_ps((y), _mm_shuffle_ps((y), (y), _MM_SHUFFLE(1,0,3,2))))
+#define vector_store(x,y) _mm_store_ps((x), (y))
 #else
 #define vector_type float
+#define vector_load(x) (*x)
 #endif
 
-void
-down_loop(struct rcvr_cb* rcb, int pass) {
-	int i, j, k = 0;
-	int dsample, count, coeff_len;
-	bool IQ_swap;
-	float* buf, *out;
-	float* pSrc, *orig_buf;
-	const vector_type* pFil;
-	vector_type sum1, sum2;
-	struct main_cb* mcb = rcb->mcb;
+#define MAX_LOOPS 5
+#define FILTER_LEN 8
 
-	if(1 == pass) {
-		// 1st pass filter is hb for 768000
-		IQ_swap = true;
-		dsample = 2;
-		count = RTL_READ_COUNT;
-		coeff_len = COEFF3072_H_16_LENGTH;
-		buf = &(rcb->iq_buf[0]);
-		out = &(rcb->iq_buf_final[COEFF1536_H_32_LENGTH * 2]);
-	} else {
-		IQ_swap = false;
-		count = RTL_READ_COUNT / 2;
-		coeff_len = mcb->length_fir;
-		buf = &(rcb->iq_buf_final[0]);
-		out = &(rcb->iqSamples[rcb->iqSamples_remaining * 2]);
+static float coeff_hb[FILTER_LEN] = {
+	// 0.0, skip this as we want a multiple of 4
+	0.240196626329132970,
+	0.519606747341734180,
+	0.240196626329132970,
+	0.0,
+};
+
+// optimized for intrinsics
+static float coeff_hb3[FILTER_LEN*2] = {
+	0.240196626329132970,
+	0.240196626329132970,
+	0.519606747341734180,
+	0.519606747341734180,
+	0.240196626329132970,
+	0.240196626329132970,
+	0.0,
+	0.0,
+};
+
+static float coeff_hb2[FILTER_LEN*2] = {
+	 0.007459452182686200,
+	 0.007459452182686200,
+	-0.053643924388308561,
+	-0.053643924388308561,
+	 0.296225648097030230,
+	 0.296225648097030230,
+	 0.499917648217184480,
+	 0.499917648217184480,
+	 0.296225648097030230,
+	 0.296225648097030230,
+	-0.053643924388308561,
+	-0.053643924388308561,
+	 0.007459452182686200,
+	 0.007459452182686200,
+	 0.000000000000000000,
+	 0.000000000000000000,
+};
+
+struct iq_bufs {
+	float *in;
+	float *out;
+};
+
+void
+downsample(struct rcvr_cb* rcb) {
+	int i, j, k, l;
+	int count = RTL_READ_COUNT;
+	float* pSrc;
+	struct main_cb* mcb = rcb->mcb;
+	static int last = 0, loop = 0;
+	static float iq_buf_768[MAX_RCVRS][RTL_READ_COUNT/2] __attribute__((aligned(16)));
+	static float iq_buf_384[MAX_RCVRS][RTL_READ_COUNT/4] __attribute__((aligned(16)));
+	static float iq_buf_192[MAX_RCVRS][RTL_READ_COUNT/8] __attribute__((aligned(16)));
+	static float iq_buf_96[MAX_RCVRS][RTL_READ_COUNT/16] __attribute__((aligned(16)));
+	static struct iq_bufs iq_buf_loop[MAX_RCVRS][MAX_LOOPS];
+	static vector_type h0, h1, h2, h3, v, s;
+
+	// just need to do once through for each rcvr
+	if (rcb->output_rate != mcb->output_rate) {
+		rcb->output_rate = mcb->output_rate;
+		h0 = vector_load(coeff_hb2);
+		h1 = vector_load(coeff_hb2 + 4);
+		h2 = vector_load(coeff_hb2 + 8);
+		h3 = vector_load(coeff_hb2 + 12);
+		iq_buf_loop[rcb->rcvr_num][0].in = rcb->iq_buf;
+		iq_buf_loop[rcb->rcvr_num][0].out = iq_buf_768[rcb->rcvr_num];
+		iq_buf_loop[rcb->rcvr_num][1].in = iq_buf_768[rcb->rcvr_num];
+		iq_buf_loop[rcb->rcvr_num][1].out = iq_buf_384[rcb->rcvr_num];
+		iq_buf_loop[rcb->rcvr_num][2].in = iq_buf_384[rcb->rcvr_num];
+		iq_buf_loop[rcb->rcvr_num][2].out = iq_buf_192[rcb->rcvr_num];
+		iq_buf_loop[rcb->rcvr_num][3].in = iq_buf_192[rcb->rcvr_num];
+		iq_buf_loop[rcb->rcvr_num][3].out = iq_buf_96[rcb->rcvr_num];
+		iq_buf_loop[rcb->rcvr_num][4].in = iq_buf_96[rcb->rcvr_num];
 
 		switch(mcb->output_rate) {
 		case 48000:
-			dsample = DOWNSAMPLE_192 * 2;
+			loop = 5;
+			last = 4;
 			break;
 
 		case 96000:
-			dsample = DOWNSAMPLE_192;
+			loop = 4;
+			last = 3;
 			break;
-
+	
 		case 192000:
-			dsample = DOWNSAMPLE_192 / 2;
+			loop = 3;
+			last = 2;
 			break;
 
 		case 384000:
-			dsample = DOWNSAMPLE_192 / 4;
+			loop = 2;
+			last = 1;
 			break;
 		}
 	}
 
-	orig_buf = buf;
+	iq_buf_loop[rcb->rcvr_num][last].out = &(rcb->iqSamples[rcb->iqSamples_remaining * 2]);
 
+	for(l = 0; l < loop; l++) {
+		for(j = 0, k = 0; j < count; j += 2) {
+			if(0 == (j % 4)) {
+			pSrc = &(iq_buf_loop[rcb->rcvr_num][l].in[j]);
 #if defined(INCLUDE_NEON) || defined(INCLUDE_SSE2)
-	// filter is evaluated for two I/Q samples with each iteration, thus use of 'j += 2'
-	for(j = 0; j < count / 2; j += 2) {
-		pSrc = buf;
+			s = vector_zero;
+			s = vector_mac(s, pSrc, h0);
+			s = vector_mac(s, pSrc+4, h1);
+			s = vector_mac(s, pSrc+8, h2);
+			s = vector_mac(s, pSrc+12, h3);
+			vector_store(rcb->dest, s);
 
-		// filter coefficients. NOTE: Assumes coefficients are aligned to 16-byte boundary
-		if(1 == pass)
-			pFil = (const vector_type*) mcb->align3072_768_H;
-		else {
-			switch(mcb->output_rate) {
-			case 48000:
-				pFil = (const vector_type*) mcb->align1536_48_H;
-				break;
+			iq_buf_loop[rcb->rcvr_num][l].out[k++] = rcb->dest[0] + rcb->dest[2];
+			iq_buf_loop[rcb->rcvr_num][l].out[k++] = rcb->dest[1] + rcb->dest[3];
+#else
+			v = s = 0.0f;
 
-			case 96000:
-				pFil = (const vector_type*) mcb->align1536_96_H;
-				break;
+			// unroll for slight performance boost
+			v += *pSrc * coeff_hb[0];
+			s += *(pSrc + 1) * coeff_hb[0];
+			v += *(pSrc + 2) * coeff_hb[1];
+			s += *(pSrc + 3) * coeff_hb[1];
+			v += *(pSrc + 4) * coeff_hb[2];
+			s += *(pSrc + 5) * coeff_hb[2];
+			v += *(pSrc + 6) * coeff_hb[3];
+			s += *(pSrc + 7) * coeff_hb[3];
 
-			case 192000:
-				pFil = (const vector_type*) mcb->align1536_192_H;
-				break;
-
-			case 384000:
-				pFil = (const vector_type*) mcb->align1536_384_H;
-				break;
+			// each loop is a half band lowpass so always downsample by 2 (% 4)
+			iq_buf_loop[rcb->rcvr_num][l].out[k++] = v;
+			iq_buf_loop[rcb->rcvr_num][l].out[k++] = s;
+#endif
 			}
 		}
 
-		sum1 = vector_zero;
-//        sum1 = sum2 = vector_zero;
-
-		for(i = 0; i < coeff_len / 8; i++) {
-			// Unroll loop for efficiency & calculate filter for 2*2 I/Q samples
-			// at each pass
-
-			// sum1 is accu for 2*2 filtered I/Q data at the primary data offset
-			// sum2 is accu for 2*2 filtered I/Q data for the next sample offset.
-			sum1 = vector_mac(sum1, pSrc, pFil[0]);
-//            sum2 = vector_mac(sum2, pSrc+2, pFil[0]);
-
-			sum1 = vector_mac(sum1, pSrc + 4, pFil[1]);
-//            sum2 = vector_mac(sum2, pSrc+6, pFil[1]);
-
-			sum1 = vector_mac(sum1, pSrc + 8, pFil[2]);
-//            sum2 = vector_mac(sum2, pSrc+10, pFil[2]);
-
-			sum1 = vector_mac(sum1, pSrc + 12, pFil[3]);
-//            sum2 = vector_mac(sum2, pSrc+14, pFil[3]);
-
-			pSrc += 16;
-			pFil += 4;
-		}
-
-		buf += 4;
-
-		// Now sum1 and sum2 both have a filtered 2-channel sample each, but we still need
-		// to sum the two hi- and lo-floats of these registers together. Only perform this
-		// if we actually need it for the downsampled output data.
-		// UPDATE: since we're throwing away sum2, don't bother calculating it.
-		if(0 == ((j + 2) % dsample)) {
-			// post-shuffle & add the filtered values and store to dest.
-			vector_store(rcb->dest, sum1, sum1);
-#if 0
-			_mm_store_ps(rcb->dest, _mm_add_ps(_mm_shuffle_ps(sum1, sum2, _MM_SHUFFLE(1, 0, 3, 2)),       // s2_1 s2_0 s1_3 s1_2
-			                                   _mm_shuffle_ps(sum1, sum2, _MM_SHUFFLE(3, 2, 1, 0))      // s2_3 s2_2 s1_1 s1_0
-			                                  ));
-#endif
-
-			// Since we're decimating we only need one of the sums
-			out[k++] = (IQ_swap) ? rcb->dest[0] : rcb->dest[1];
-			out[k++] = (IQ_swap) ? rcb->dest[1] : rcb->dest[0];
-
-#else // non SIMD
-
-	for(j = 0; j < count; j += 2) {
-
-		pSrc = buf;
-
-		if(1 == pass)
-			pFil = mcb->coeff_768;
-		else {
-			switch(mcb->output_rate) {
-			case 48000:
-				pFil = mcb->coeff_48;
-				break;
-
-			case 96000:
-				pFil = mcb->coeff_96;
-				break;
-
-			case 192000:
-				pFil = mcb->coeff_192;
-				break;
-
-			case 384000:
-				pFil = mcb->coeff_384;
-				break;
-			}
-		}
-
-		sum1 = sum2 = 0.0f;
-
-		for(i = 0; i < coeff_len; i++) {
-			sum1 += pSrc[0] * pFil[0];
-			sum2 += pSrc[1] * pFil[0];
-			pSrc += 2;
-			pFil++;
-		}
-
-		buf += 2;
-
-		if(0 == (((j + 2) / 2) % dsample)) {
-			out[k++] = (IQ_swap) ? sum2 : sum1;
-			out[k++] = (IQ_swap) ? sum1 : sum2;
-#endif
-		}
+		count >>= 1;
 	}
-
-	// Move the last coeff_len*2 length of buffer to the front for the next call
-	memmove(orig_buf, &orig_buf[count - (coeff_len * 2)],
-	        coeff_len * 2 * sizeof(float));
-}
-
-void
-downsample(struct rcvr_cb * rcb) {
-	down_loop(rcb, 1);
-	down_loop(rcb, 2);
 }

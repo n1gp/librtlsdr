@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 by Kyle Keen <keenerd@gmail.com>
+ * Copyright (C) 2013-2014 by Kyle Keen <keenerd@gmail.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -174,6 +174,8 @@ int verbose_direct_sampling(rtlsdr_dev_t *dev, int on)
 		fprintf(stderr, "Enabled direct sampling mode, input 1/I.\n");}
 	if (on == 2) {
 		fprintf(stderr, "Enabled direct sampling mode, input 2/Q.\n");}
+	if (on == 3) {
+		fprintf(stderr, "Enabled no-mod direct sampling mode.\n");}
 	return r;
 }
 
@@ -232,6 +234,34 @@ int verbose_ppm_set(rtlsdr_dev_t *dev, int ppm_error)
 	return r;
 }
 
+int verbose_ppm_eeprom(rtlsdr_dev_t *dev, int *ppm_error)
+{
+	#define start_char ' '
+	#define stop_char 'p'
+	int i, r, len, status = -1;
+	char vendor[256], product[256], serial[256];
+	r = rtlsdr_get_usb_strings(dev, vendor, product, serial);
+	if (r) {
+		return r;
+	}
+	len = strlen(serial);
+	if (len <= 3) {
+		return -1;}
+	if (serial[len-1] != stop_char) {
+		return -1;}
+	serial[len-1] = '\0';
+	for (i=len-3; i>=0; i--) {
+		if (serial[i] != start_char) {
+			continue;}
+		fprintf(stderr, "PPM calibration found in eeprom.\n");
+		status = 0;
+		*ppm_error = atoi(serial + i + 1);
+		break;
+	}
+	serial[len-1] = stop_char;
+	return status;
+}
+
 int verbose_reset_buffer(rtlsdr_dev_t *dev)
 {
 	int r;
@@ -245,7 +275,7 @@ int verbose_device_search(char *s)
 {
 	int i, device_count, device, offset;
 	char *s2;
-	char vendor[256], product[256], serial[256];
+	char vendor[256] = {0}, product[256] = {0}, serial[256] = {0};
 	device_count = rtlsdr_get_device_count();
 	if (!device_count) {
 		fprintf(stderr, "No supported devices found.\n");
@@ -253,8 +283,11 @@ int verbose_device_search(char *s)
 	}
 	fprintf(stderr, "Found %d device(s):\n", device_count);
 	for (i = 0; i < device_count; i++) {
-		rtlsdr_get_device_usb_strings(i, vendor, product, serial);
-		fprintf(stderr, "  %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
+		if (rtlsdr_get_device_usb_strings(i, vendor, product, serial) == 0) {
+			fprintf(stderr, "  %d:  %s, %s, SN: %s\n", i, vendor, product, serial);
+		} else {
+			fprintf(stderr, "  %d:  %s\n", i, "Failed to query data");
+		}
 	}
 	fprintf(stderr, "\n");
 	/* does string look like raw id number */
