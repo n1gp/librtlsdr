@@ -599,7 +599,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
 #if 1
             rxnum = rcb->rcvr_num;
             printf
-              ("INFO: Rx[%d]: if_bw: %dHz, offset: %dHz, center: %dHz [%8dHz], gain: %0.2f dB, gain_mode: %s, agc: %s, direct: %s\n",
+              ("INFO: Rx[%d]: if_bw: %dHz, offset: %dHz, center: %dHz [%8dHz], gain: %0.2f dB, gain_mode: %s, agc: %s, bias_t: %s, direct: %s\n",
                mcb.rcb[rxnum].rcvr_num + 1, 
 	       mcb.if_bw[rxnum],
 	       mcb.freq_offset[rxnum],
@@ -993,7 +993,7 @@ update_dongle ()
 	//	gain = mcb.gain[i];
 
 	printf
-	  ("INFO: Rx[%d]: if_bw: %dHz, center: %dHz [%8dHz], gain: %0.2f dB, gain_mode: %s, agc: %s, direct: %s\n",
+	  ("INFO: Rx[%d]: if_bw: %dHz, center: %dHz [%8dHz], gain: %0.2f dB, gain_mode: %s, agc: %s, bias_t: %s, direct: %s\n",
 	   mcb.rcb[i].rcvr_num + 1, 
 	   mcb.if_bw[i],
 	   mcb.center_freq[i],
