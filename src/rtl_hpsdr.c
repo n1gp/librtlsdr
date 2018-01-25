@@ -608,6 +608,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
                mcb.gain[rxnum] / 10.0,
 	       mcb.gain_mode[rxnum] ? "auto" : "manual", 
 	       mcb.agc_mode[rxnum] ? "on" : "off",
+	       mcb.bias_t[rxnum] ? "on" : "off",
                mcb.direct_mode[rxnum] ? "on" : "off");
 #endif
 	 }
@@ -910,6 +911,7 @@ void update_config()
       mcb.last_gain_mode[i] = mcb.gain_mode[i];
       mcb.last_freq_offset[i] = mcb.freq_offset[i];
       mcb.last_agc_mode[i] = mcb.agc_mode[i];
+      mcb.last_bias_t[i] = mcb.bias_t[i];
       mcb.last_direct_mode[i] = mcb.direct_mode[i];
       mcb.last_center_freq[i] = mcb.center_freq[i];
     }
@@ -979,6 +981,12 @@ update_dongle ()
 	    return (-1);
 	}
 
+	r = rtlsdr_set_bias_tee (rtldev, mcb.bias_t[i]);
+	if (r < 0) {
+	    printf ("WARNING: Failed to set bias T!\n");
+	    return (-1);
+	}
+
 	sprintf (num, "%d", mcb.gain[i]);
 
 #if 1
@@ -993,6 +1001,7 @@ update_dongle ()
 	   mcb.gain[i] / 10.0,
 	   mcb.gain_mode[i] ? "auto" : "manual", 
 	   mcb.agc_mode[i] ? "on" : "off",
+	   mcb.bias_t[i] ? "on" : "off",
 	   mcb.direct_mode[i] ? "on" : "off");
 #endif
 
@@ -1555,6 +1564,16 @@ init_rtl (int rcvr_num, int dev_index)
       printf ("  agc mode\t\t%s\n\n",
 	      (mcb.agc_mode[rcvr_num]) ? "on" : "off");
 
+   r = rtlsdr_set_bias_tee (rtldev, mcb.bias_t[rcvr_num]);
+
+   if (r < 0) {
+      printf ("WARNING: Failed to set bias T!\n");
+      return (-1);
+   }
+   else
+      printf ("  bias_t\t\t%s\n\n",
+	      (mcb.bias_t[rcvr_num]) ? "on" : "off");
+
    r = rtlsdr_reset_buffer (rtldev);
 
    if (r < 0) {
@@ -1574,6 +1593,7 @@ usage (char *progname)
    printf ("\nSee rtl_hpsdr.conf for configuration option descriptions.\n"
 	   "\nUsage:\n" "\tPer rcvr options (comma separated i.e. 1,0,1,1):\n"
 	   "\t[-a internal agc of the rtl2832 0|1 (defaults 0 or off)]\n"
+	   "\t[-b turn on bias_t (if supported by dongle) 0|1 (defaults 0 or off)]\n"
 	   "\t[-d direct sampling mode 0|1|2|3 (defaults 0 or off, 1=I 2=Q 3=NOMOD)]\n"
 	   "\t[-f freq offset in hz (defaults 0)]\n"
 	   "\t[-g gain in tenths of a db (defaults 0 for auto)]\n"
@@ -1684,6 +1704,9 @@ parse_config (char *conf_file)
 	 else if (!strcmp ("agc_mode", option)) {
 	    count = set_option (mcb.agc_mode, value);
 	 }
+	 else if (!strcmp ("bias_t", option)) {
+	    count = set_option (mcb.bias_t, value);
+	 }
 	 else if (!strcmp ("rcvr_order", option)) {
 	    count = set_option (mcb.rcvr_order, value);
 	 }
@@ -1760,6 +1783,8 @@ main (int argc, char *argv[])
    for (i = 0; i < MAX_RCVRS; i++) {
       mcb.agc_mode[i] = 0;
       mcb.last_agc_mode[i] = 0;
+      mcb.bias_t[i] = 0;
+      mcb.last_bias_t[i] = 0;
       mcb.direct_mode[i] = 0;
       mcb.last_direct_mode[i] = 0;
       mcb.gain[i] = 0;
@@ -1773,11 +1798,15 @@ main (int argc, char *argv[])
    }
 
    while (loop
-	  && ((opt = getopt (argc, argv, "C:c:a:d:e:f:g:hi:l:m:o:p:r:s:v")) !=
+	  && ((opt = getopt (argc, argv, "C:c:a:b:d:e:f:g:hi:l:m:o:p:r:s:v")) !=
 	      -1)) {
       switch (opt) {
 	case 'a':
 	   r = set_option (mcb.agc_mode, optarg);
+	   break;
+
+	case 'b':
+	   r = set_option (mcb.bias_t, optarg);
 	   break;
 
 	case 'd':

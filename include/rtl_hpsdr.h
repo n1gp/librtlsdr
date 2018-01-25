@@ -99,6 +99,7 @@ struct main_cb {
 
 	// the last array member is used to remember last settings
 	int agc_mode[MAX_RCVRS + 1];
+	int bias_t[MAX_RCVRS + 1];
 	int direct_mode[MAX_RCVRS + 1];
 	int gain[MAX_RCVRS + 1];
 	int freq_offset[MAX_RCVRS + 1];
@@ -108,6 +109,7 @@ struct main_cb {
        
 	// Added to handle dynamic config file updates
 	int last_agc_mode[MAX_RCVRS + 1];
+	int last_bias_t[MAX_RCVRS + 1];
 	int last_direct_mode[MAX_RCVRS + 1];
 	int last_gain[MAX_RCVRS + 1];
 	int last_freq_offset[MAX_RCVRS + 1];
