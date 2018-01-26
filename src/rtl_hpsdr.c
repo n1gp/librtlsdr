@@ -1561,7 +1561,7 @@ init_rtl (int rcvr_num, int dev_index)
       return (-1);
    }
    else
-      printf ("  agc mode\t\t%s\n\n",
+      printf ("  agc mode\t\t%s\n",
 	      (mcb.agc_mode[rcvr_num]) ? "on" : "off");
 
    r = rtlsdr_set_bias_tee (rtldev, mcb.bias_t[rcvr_num]);
