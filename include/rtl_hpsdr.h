@@ -84,6 +84,22 @@
 #define RTL_MODE_SKIMMER 0
 #define RTL_MODE_WSPR    1
 
+typedef struct {
+    char     chunk_id[4];
+    uint32_t chunk_size;
+    char     format[4];
+    char     fmtchunk_id[4];
+    uint32_t fmtchunk_size;
+    uint16_t audio_format;
+    uint16_t num_channels;
+    uint32_t sample_rate;
+    uint32_t byte_rate;
+    uint16_t block_align;
+    uint16_t bps;
+    char     datachunk_id[4];
+    uint32_t datachunk_size;
+} WavHeader;
+
 struct main_cb {
 	int total_num_rcvrs;
 	int active_num_rcvrs;
@@ -150,6 +166,7 @@ struct main_cb {
 
 		float rtl_buf[RTL_READ_COUNT];
 		float* iq_buf;
+	    char filename[MAXSTR];
 	} rcb[MAX_RCVRS];
 };
 

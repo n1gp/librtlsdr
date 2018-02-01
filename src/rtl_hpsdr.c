@@ -98,6 +98,12 @@ static float rtl_lut[4][256];
 static u_char *fft_buf;
 static int reset_cal = 0;
 static int do_cal_time = 5;	//seconds between calibration
+static bool using_wavfiles = false;
+
+// using clock_nanosleep of librt
+extern int clock_nanosleep(clockid_t __clock_id, int __flags,
+      __const struct timespec *__req,
+      struct timespec *__rem);
 
 void
 rtl_sighandler (int signum)
@@ -460,7 +466,7 @@ load_packet (struct rcvr_cb *rcb)
       (num_copy_rcvrs > 0) ? frame_offset2[copy_total] : mcb.frame_offset2;
    int offsetx;
    float *out_buf = &rcb->iqSamples[rcb->iqSample_offset * 2];
-   short IQData;
+   int IQData;
 
    i = 0;
    k = 0;
@@ -474,14 +480,25 @@ load_packet (struct rcvr_cb *rcb)
       while (b < offsetx) {
 	 for (j = 0; j < mcb.active_num_rcvrs + num_copy_rcvrs; j++) {
 	    if ((j == rcb->rcvr_num) || (do_copy && copy_rcvr[j] == j)) {
-	       IQData = (short) out_buf[i];
-	       payload[b++] = IQData >> 8;
-	       payload[b++] = IQData & 0xff;
-	       b++;		//payload[b++] = 0;
-	       IQData = (short) out_buf[i + 1];
-	       payload[b++] = IQData >> 8;
-	       payload[b++] = IQData & 0xff;
-	       b++;		//payload[b++] = 0;
+	       if (using_wavfiles) {
+	           IQData = ((int)(out_buf[i]));
+	           payload[b++] = (IQData & 0xff00) >> 8;
+	           payload[b++] = (IQData & 0xff0000) >> 16;
+	           payload[b++] = (IQData & 0xff000000) >> 24;
+	           IQData = ((int)(out_buf[i+1]));
+	           payload[b++] = (IQData & 0xff00) >> 8;
+	           payload[b++] = (IQData & 0xff0000) >> 16;
+	           payload[b++] = (IQData & 0xff000000) >> 24;
+           } else {
+	           IQData = (int) out_buf[i];
+	           payload[b++] = IQData >> 8;
+	           payload[b++] = IQData & 0xff;
+	           b++;
+	           IQData = (int) out_buf[i + 1];
+	           payload[b++] = IQData >> 8;
+	           payload[b++] = IQData & 0xff;
+	           b++;
+           }
 
 	       if (do_copy) {
 		  if (j == copy_total)
@@ -524,6 +541,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
 
    //printf("ENTERING hpsdrsim_sendiq_thr_func() rcvr %d...\n", rcb->rcvr_num+1);
    while (!do_exit) {
+      if (!running) rcb->iqSample_offset = rcb->iqSamples_remaining = 0;
       samps_packet = (num_copy_rcvrs > 0)
 	 ? nsamps_packet[(mcb.active_num_rcvrs - 1) + num_copy_rcvrs]
 	 : mcb.nsamps_packet;
@@ -539,6 +557,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
       if (rcb->iqSamples_remaining < 0)
 	 rcb->iqSamples_remaining = 0;
 
+      if (!using_wavfiles) {
       // downsample starting at any remaining offset
       downsample (rcb);
 
@@ -559,6 +578,11 @@ hpsdrsim_sendiq_thr_func (void *arg)
 	   rcb->iqSamples_remaining += RTL_READ_COUNT / DOWNSAMPLE_192;
 	   break;
       }
+      } else {
+           memcpy(&rcb->iqSamples[rcb->iqSamples_remaining * 2], &rcb->iq_buf[0], 9600 * 2 * sizeof (float));
+	   //RRK rcb->iqSamples_remaining += mcb.output_rate * 2;
+	   rcb->iqSamples_remaining += 9600;
+      }
 
       while (rcb->iqSamples_remaining > samps_packet) {
 	 load_packet (rcb);
@@ -575,9 +599,10 @@ hpsdrsim_sendiq_thr_func (void *arg)
       }
 
       // Set new frequency if one is pending and enough time has expired
-      if ((mcb.rcb[rcb->rcvr_num].new_freq) && (mcb.rcb[rcb->rcvr_num].new_freq != 10000000)) {
-	 ftime (&mcb.freq_ttime[rcb->rcvr_num]);
-	 if ((((((mcb.freq_ttime[rcb->rcvr_num].time * 1000) +
+      if (!using_wavfiles) {
+        if ((mcb.rcb[rcb->rcvr_num].new_freq) && (mcb.rcb[rcb->rcvr_num].new_freq != 10000000)) {
+	   ftime (&mcb.freq_ttime[rcb->rcvr_num]);
+	   if ((((((mcb.freq_ttime[rcb->rcvr_num].time * 1000) +
 		 mcb.freq_ttime[rcb->rcvr_num].millitm) -
 		(mcb.freq_ltime[rcb->rcvr_num].time * 1000) +
 		mcb.freq_ltime[rcb->rcvr_num].millitm)) > 200)
@@ -611,6 +636,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
 	       mcb.bias_t[rxnum] ? "on" : "off",
                mcb.direct_mode[rxnum] ? "on" : "off");
 #endif
+	      }
 	 }
       }
    }
@@ -1096,10 +1122,12 @@ hpsdrsim_watchdog_thread (void *arg)
    pthread_cond_broadcast (&send_cond);
    pthread_mutex_unlock (&send_lock);
 
-   pthread_mutex_lock (&iqready_lock);
-   rcvr_flags = mcb.rcvrs_mask;
-   pthread_cond_broadcast (&iqready_cond);
-   pthread_mutex_unlock (&iqready_lock);
+   if (!using_wavfiles) {
+      pthread_mutex_lock (&iqready_lock);
+      rcvr_flags = mcb.rcvrs_mask;
+      pthread_cond_broadcast (&iqready_cond);
+      pthread_mutex_unlock (&iqready_lock);
+   }
 
    // set everything back to a 1 rcvr state
    mcb.rcvrs_mask = 1;
@@ -1437,12 +1465,85 @@ void *
 rtl_read_thr_func (void *arg)
 {
    struct rcvr_cb *rcb = (struct rcvr_cb *) arg;
-   int r, i = rcb->rcvr_num;
+   int r, j, k, i = rcb->rcvr_num;
+   FILE * fp;
+   unsigned short IQm, IQl;
+   short IQ;
+   int ns_interval;
+   struct timespec timeS, timeE;
+   time_t raw_time;
+   struct tm *ptr_ts;
+   WavHeader header;
+   bool wav = false;
+
 
    //printf("ENTERING rtl_read_thr_func() rcvr %d\n", i+1);
 #if 1
-   r = rtlsdr_read_async (rcb->rtldev, rtlsdr_callback,
+   if (using_wavfiles) {
+       if ((fp = fopen(rcb->filename, "rb")) != NULL) {
+           while (!do_exit) {
+               j = k = 0;
+               if (strstr(rcb->filename, ".wav") != NULL) {
+                  fread(&header, sizeof(WavHeader), 1, fp);
+                  wav = true;
+               }
+               clock_gettime(CLOCK_MONOTONIC, &timeS);
+               while (running) {
+                   if (wav) { //RRK TODO, set sample rate/size from header info
+                      fread(&IQ, sizeof(IQ), 1, fp);
+                      rcb->iq_buf[j] = (float)((IQ << 16) & 0xffff0000);
+                      fread(&IQ, sizeof(IQ), 1, fp);
+                      r = (int)IQ;
+                      rcb->iq_buf[j+1] = (float)((IQ << 16) & 0xffff0000);
+                   } else {
+                      fread(&IQm, sizeof(IQm), 1, fp);
+                      fread(&IQl, sizeof(IQm), 1, fp);
+   	              rcb->iq_buf[j] = (float)((IQm << 16) | IQl);
+                      fread(&IQm, sizeof(IQm), 1, fp);
+                      fread(&IQl, sizeof(IQm), 1, fp);
+                      rcb->iq_buf[j+1] = (float)((IQm << 16) | IQl);
+                   }
+                   //if (do_zero) rcb->iq_buf[j] = rcb->iq_buf[j+1] = ((float)rand()/(float)(RAND_MAX)) * 65536.0f;
+	           j+=2;
+	           k++;
+	           // set for N8UR's bin recordings @ 96ksps
+	           if (k == 9600) {
+                      pthread_mutex_lock (&iqready_lock);
+                      rcvr_flags |= rcb->rcvr_mask;
+                      pthread_cond_broadcast (&iqready_cond);
+                      pthread_mutex_unlock (&iqready_lock);
+                     break;
+                   }
+                   if (feof(fp)) {
+                      rewind(fp);
+                      time (&raw_time);
+                      ptr_ts = gmtime (&raw_time);
+
+                      // format time to SkimSrv's i.e. 2018-02-01 16:52:05Z
+                      printf("rcvr %d, Rewinding file %s at %4d-%02d-%02d %2d:%02d:%02dZ\n",
+                          i+1, rcb->filename, ptr_ts->tm_year+1900, ptr_ts->tm_mon,
+                          ptr_ts->tm_mday, ptr_ts->tm_hour, ptr_ts->tm_min, ptr_ts->tm_sec);
+                   }
+               }
+           
+               clock_gettime(CLOCK_MONOTONIC, &timeE);
+               ns_interval = (timeE.tv_sec > timeS.tv_sec) ? ((timeE.tv_sec - timeS.tv_sec) * 1000000000)
+                                                             - (timeS.tv_nsec - timeE.tv_nsec)
+                                                        : (timeE.tv_nsec - timeS.tv_nsec);
+               // figure out the delta from above, we want to sleep precisely 100ms
+               timeE.tv_nsec += 100000000 - ns_interval;
+               if(timeE.tv_nsec >= 1000000000) {
+                   timeE.tv_nsec -= 1000000000;
+                   timeE.tv_sec++;
+               }
+               clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &timeE, NULL);
+           }
+           fclose(fp);
+       }
+   } else {
+       r = rtlsdr_read_async (rcb->rtldev, rtlsdr_callback,
 			  (void *) (&mcb.rcb[i]), 2, RTL_READ_COUNT);
+   }
 #else // simulate an rtl read
    while (!do_exit || running) {
       usleep (5000);		// approximate
@@ -1597,7 +1698,8 @@ usage (char *progname)
 	   "\t[-d direct sampling mode 0|1|2|3 (defaults 0 or off, 1=I 2=Q 3=NOMOD)]\n"
 	   "\t[-f freq offset in hz (defaults 0)]\n"
 	   "\t[-g gain in tenths of a db (defaults 0 for auto)]\n"
-	   "\t[-o rcvr order (defaults to 1 - number detected)]\n\n"
+	   "\t[-o rcvr order (defaults to 1 - number detected)]\n"
+	   "\t[-w wav_filename]\n\n"
 	   "\tGlobal options:\n"
 	   "\t[-C freq in hz in which to calibrate selected dongles]\n"
 	   "\t[-c path to config file (overrides these options)]\n"
@@ -1667,6 +1769,33 @@ set_gain_option (int *option, char *value)
       }
       else
 	 option[i] = option[MAX_RCVRS];	// set to last
+   }
+
+   return (count);
+}
+
+int
+set_filename_option (char *value)
+{
+   char params[MAX_RCVRS][MAXSTR];
+   int i, count = 0;
+   char *token;
+   const char s[2] = ",";
+
+   // get the first token
+   token = strtok (value, s);
+
+   // walk through other tokens
+   while ((token != NULL) && (count < MAX_RCVRS)) {
+      strcpy (&(params[count++][0]), token);
+      token = strtok (NULL, s);
+   }
+
+   for (i = 0; i < MAX_RCVRS; i++) {
+      if (i < count) {
+	strcpy(mcb.rcb[i].filename, params[i]);
+	mcb.total_num_rcvrs += 1;
+      }
    }
 
    return (count);
@@ -1782,6 +1911,7 @@ main (int argc, char *argv[])
    // Initialize per receiver config settings
    for (i = 0; i < MAX_RCVRS; i++) {
       mcb.agc_mode[i] = 0;
+      mcb.rcb[i].filename[0] = '\0';
       mcb.last_agc_mode[i] = 0;
       mcb.bias_t[i] = 0;
       mcb.last_bias_t[i] = 0;
@@ -1798,7 +1928,7 @@ main (int argc, char *argv[])
    }
 
    while (loop
-	  && ((opt = getopt (argc, argv, "C:c:a:b:d:e:f:g:hi:l:m:o:p:r:s:v")) !=
+	  && ((opt = getopt (argc, argv, "C:c:a:b:d:e:f:g:hi:l:m:o:p:r:s:v:w:")) !=
 	      -1)) {
       switch (opt) {
 	case 'a':
@@ -1807,6 +1937,11 @@ main (int argc, char *argv[])
 
 	case 'b':
 	   r = set_option (mcb.bias_t, optarg);
+	   break;
+
+	case 'w':
+	   r = set_filename_option (optarg);
+	   using_wavfiles = true;
 	   break;
 
 	case 'd':
@@ -1876,6 +2011,7 @@ main (int argc, char *argv[])
       }
    }
 
+   if (!using_wavfiles) {
    r = rtlsdr_get_device_count ();
 
    if (r) {
@@ -1910,6 +2046,9 @@ main (int argc, char *argv[])
       printf ("  up_xtal freq:\t\t%d hz\n", mcb.up_xtal);
    printf ("  sound device:\t\t%s\n",
 	   (0 == mcb.sound_dev[0]) ? "none" : mcb.sound_dev);
+   } else {
+       printf("Using wav files, no RTL hardware will be used\n");
+   }
 
 #ifndef _WIN32
    sigact.sa_handler = rtl_sighandler;
@@ -1964,20 +2103,29 @@ main (int argc, char *argv[])
       mcb.rcb[i].output_rate = 0;
       printf ("\nRcvr %d (ordered as %d) settings...\n", i + 1,
 	      mcb.rcvr_order[i]);
-      rtlsdr_get_device_usb_strings (i, vendor, product, serial);
-      printf ("  S/N \t\t\t%s\n", serial);
-      printf ("  freq offset\t\t%d hz\n", mcb.freq_offset[i]);
+      if (mcb.rcb[i].filename[0] == '\0') {
+          rtlsdr_get_device_usb_strings (i, vendor, product, serial);
+          printf ("  S/N \t\t\t%s\n", serial);
+          printf ("  freq offset\t\t%d hz\n", mcb.freq_offset[i]);
 
-      if (0 != init_rtl (i, mcb.rcvr_order[i] - 1)) {
-	 printf ("ERROR: Failed init_rtl rcvr%d hardware!\n", i + 1);
-	 return (-1);
-      }
+          if (0 != init_rtl (i, mcb.rcvr_order[i] - 1)) {
+              printf ("ERROR: Failed init_rtl rcvr%d hardware!\n", i + 1);
+    	      return (-1);
+          }
+      } else
+          printf ("Rcvr %d is reading IQ data from: %s\n", i + 1, mcb.rcb[i].filename);
 
       mcb.rcb[i].rtl_read_thr = rtl_read_thr[i];
       mcb.rcb[i].hpsdrsim_sendiq_thr = hpsdrsim_sendiq_thr[i];
       mcb.rcb[i].rcvr_num = i;
+      if (using_wavfiles) {
+      r = float_malloc_align ((void **) &(mcb.rcb[i].iq_buf), 16,
+			      96000 * 2 * sizeof (float));
+			      //RRK mcb.output_rate * 2 * sizeof (float));
+      } else {
       r = float_malloc_align ((void **) &(mcb.rcb[i].iq_buf), 16,
 			      RTL_READ_COUNT * sizeof (float));
+      }
 
       if (r != 0) {
 	 printf ("failed to allocate iq_buf aligned memory: r=%d\n", r);
@@ -2059,7 +2207,7 @@ main (int argc, char *argv[])
 
    // clean up
    for (i = 0; i < mcb.total_num_rcvrs; i++) {
-      rtlsdr_close (mcb.rcb[i].rtldev);
+      if (!using_wavfiles) rtlsdr_close (mcb.rcb[i].rtldev);
       float_free_align (mcb.rcb[i].iq_buf);
    }
 
