@@ -98,7 +98,7 @@ static float rtl_lut[4][256];
 static u_char *fft_buf;
 static int reset_cal = 0;
 static int do_cal_time = 5;	//seconds between calibration
-static bool using_wavfiles = false;
+static bool using_wavfiles = false, using_wavrewind = false;
 
 // using clock_nanosleep of librt
 extern int clock_nanosleep(clockid_t __clock_id, int __flags,
@@ -1475,6 +1475,7 @@ rtl_read_thr_func (void *arg)
    struct tm *ptr_ts;
    WavHeader header;
    bool wav = false;
+   char message[MAXSTR];
 
 
    //printf("ENTERING rtl_read_thr_func() rcvr %d\n", i+1);
@@ -1515,13 +1516,17 @@ rtl_read_thr_func (void *arg)
                      break;
                    }
                    if (feof(fp)) {
-                      rewind(fp);
+                      if (using_wavrewind) {
+                         rewind(fp);
+                         strcpy(message, "Rewinding");
+                      } else
+                         strcpy(message, "Ending");
                       time (&raw_time);
                       ptr_ts = gmtime (&raw_time);
 
                       // format time to SkimSrv's i.e. 2018-02-01 16:52:05Z
-                      printf("rcvr %d, Rewinding file %s at %4d-%02d-%02d %2d:%02d:%02dZ\n",
-                          i+1, rcb->filename, ptr_ts->tm_year+1900, ptr_ts->tm_mon,
+                      printf("rcvr %d, %s file %s at %4d-%02d-%02d %2d:%02d:%02dZ\n",
+                          i+1, message, rcb->filename, ptr_ts->tm_year+1900, ptr_ts->tm_mon,
                           ptr_ts->tm_mday, ptr_ts->tm_hour, ptr_ts->tm_min, ptr_ts->tm_sec);
                    }
                }
@@ -1699,7 +1704,8 @@ usage (char *progname)
 	   "\t[-f freq offset in hz (defaults 0)]\n"
 	   "\t[-g gain in tenths of a db (defaults 0 for auto)]\n"
 	   "\t[-o rcvr order (defaults to 1 - number detected)]\n"
-	   "\t[-w wav_filename]\n\n"
+	   "\t[-w wav_filename (file plays to end then stops)]\n"
+	   "\t[-W wav_filename (file plays endlessly in a loop)]\n\n"
 	   "\tGlobal options:\n"
 	   "\t[-C freq in hz in which to calibrate selected dongles]\n"
 	   "\t[-c path to config file (overrides these options)]\n"
@@ -1928,16 +1934,16 @@ main (int argc, char *argv[])
    }
 
    while (loop
-	  && ((opt = getopt (argc, argv, "C:c:a:b:d:e:f:g:hi:l:m:o:p:r:s:v:w:")) !=
+	  && ((opt = getopt (argc, argv, "C:c:a:b:d:e:f:g:hi:l:m:o:p:r:s:v:W:w:")) !=
 	      -1)) {
       switch (opt) {
 	case 'a':
 	   r = set_option (mcb.agc_mode, optarg);
 	   break;
 
-	case 'b':
-	   r = set_option (mcb.bias_t, optarg);
-	   break;
+	case 'W':
+	   using_wavrewind = true;
+	   printf("IQ files will be looped\n");
 
 	case 'w':
 	   r = set_filename_option (optarg);
