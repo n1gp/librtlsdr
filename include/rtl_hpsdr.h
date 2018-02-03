@@ -166,7 +166,7 @@ struct main_cb {
 
 		float rtl_buf[RTL_READ_COUNT];
 		float* iq_buf;
-	    char filename[MAXSTR];
+		char filename[MAX_BUFFER_LEN];
 	} rcb[MAX_RCVRS];
 };
 
