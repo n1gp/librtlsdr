@@ -86,13 +86,14 @@ static int running = 0;
 static char conf_file[MAXSTR];
 
 static u_char hw_address[6];
-static char server_ip_address[16];
+static char server_ip_address[16] = {0,};
 
 static u_char buffer[MAX_BUFFER_LEN];
 static u_char payload[HPSDR_FRAME_LEN];
 
 static u_int hpsdr_sequence = 0;
 static u_int pc_sequence;
+static u_int network_error = 0;
 
 static float rtl_lut[4][256];
 static u_char *fft_buf;
@@ -336,8 +337,10 @@ hpsdrsim_reveal (void)
    }
 
    // get my MAC address
-   if (get_addr (reveal_socket) < 0) {
-      exit (1);
+   if (server_ip_address[0] == 0) {
+      if (get_addr (reveal_socket) < 0) {
+         exit (1);
+      }
    }
 
    printf ("My IP Address: %s\n", mcb.ip_addr);
@@ -661,8 +664,15 @@ hpsdrsim_thread (void *arg)
 			hpsdrsim_watchdog_thread, NULL);
 
    if (rc != 0) {
-      printf ("pthread_create failed on hpsdrsim_watchdog_thread: rc=%d\n",
-	      rc);
+      printf ("pthread_create failed on hpsdrsim_watchdog_thread: rc=%d\n", rc);
+      exit (1);
+   }
+
+   rc = pthread_create (&discovery_thread_id, NULL,
+			hpsdrsim_discovery_thread, NULL);
+
+   if (rc != 0) {
+      printf ("pthread_create failed on discovery_thread: rc=%d\n", rc);
       exit (1);
    }
 
@@ -916,6 +926,7 @@ hpsdrsim_stop_threads ()
    pthread_mutex_unlock (&iqready_lock);
 
    pthread_cancel (watchdog_thread_id);
+   pthread_cancel (discovery_thread_id);
    pthread_cancel (hpsdrsim_thread_id);
 
    if (mcb.calibrate) {
@@ -1036,6 +1047,78 @@ update_dongle ()
     return 0;
 }
 
+// RRK TODO, make a unified discovery thread
+void *
+hpsdrsim_discovery_thread (void *arg)
+{
+   u_char ibuffer[MAX_BUFFER_LEN];
+   int rc, bytes_read, on = 1;
+   int discovery_socket;
+   struct sockaddr_in my_addr2;
+   socklen_t my_length2;
+   struct sockaddr_in their_addr2;
+   socklen_t their_length2;
+
+  //printf("START hpsdrsim_discovery_thread\n");
+
+   discovery_socket = socket (PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+   if (discovery_socket < 0) {
+      perror ("create socket failed for discovery_socket\n");
+      exit (1);
+   }
+
+   rc =
+      setsockopt (discovery_socket, SOL_SOCKET, SO_REUSEADDR, (char *) &on,
+		  sizeof (on));
+
+   if (rc != 0) {
+      printf ("cannot set SO_REUSEADDR: rc=%d\n", rc);
+      exit (1);
+   }
+
+   // bind to this interface
+   my_addr2.sin_family = AF_INET;
+   my_addr2.sin_port = htons (PORT);
+   my_addr2.sin_addr.s_addr = htonl (INADDR_ANY);
+
+   if (bind (discovery_socket, (struct sockaddr *) &my_addr2, sizeof (my_addr2)) <
+       0) {
+      perror ("1 bind socket failed for discovery_socket\n");
+      exit (1);
+   }
+
+   // allow broadcast on the socket
+   rc =
+      setsockopt (discovery_socket, SOL_SOCKET, SO_BROADCAST, (char *) &on,
+		  sizeof (on));
+
+   if (rc != 0) {
+      printf ("cannot set SO_BROADCAST: rc=%d\n", rc);
+      exit (1);
+   }
+
+   their_length2 = sizeof (their_addr2);
+
+   memset (&their_addr2, 0, their_length2);
+   their_addr2.sin_family = AF_INET;
+   their_addr2.sin_port = htons (PORT);
+   while (1) {
+      if ((bytes_read = recvfrom (discovery_socket, ibuffer, sizeof (ibuffer), 0,
+				  (struct sockaddr *) &their_addr2,
+				  &their_length2)) < 0) {
+      }				// else printf("Received %d bytes, waiting to be discovered...\n", bytes_read);
+
+      if (ibuffer[0] == 0xEF && ibuffer[1] == 0xFE && ibuffer[2] == 0x02) {
+	 if (!strcmp (server_ip_address, inet_ntoa (their_addr2.sin_addr))) {
+	     printf ("Was rediscovered by %s\n", server_ip_address);
+	     network_error = 1;
+         }
+      }
+   }
+  //printf("LEAVE hpsdrsim_discovery_thread\n");
+}
+
 void *
 hpsdrsim_watchdog_thread (void *arg)
 {
@@ -1061,6 +1144,12 @@ hpsdrsim_watchdog_thread (void *arg)
    // sleep for 1 second, check if we're sending packets
    while (1) {
       sleep (1);
+
+      if (network_error) {
+	 printf ("WARNING: A Network error occured, restarting...\n");
+	 network_error = 0;
+	 break;
+      }
 
       if (last_sequence == hpsdr_sequence) {
 	 if (do_exit)
@@ -1115,6 +1204,7 @@ hpsdrsim_watchdog_thread (void *arg)
    running = revealed = 0;
 
    pthread_cancel (hpsdrsim_thread_id);
+   pthread_cancel (discovery_thread_id);
 
    // unblock held mutexes so we can restart
    pthread_mutex_lock (&send_lock);
@@ -2203,12 +2293,14 @@ main (int argc, char *argv[])
 	 payload[6] = (hpsdr_sequence >> 8) & 0xff;
 	 payload[7] = hpsdr_sequence & 0xff;
 
-	 if (sendto (reveal_socket, payload, HPSDR_FRAME_LEN, 0,
+	 if (network_error) {
+	    sleep(1); // wait for watchdog restart
+	 } else if (sendto (reveal_socket, payload, HPSDR_FRAME_LEN, 0,
 		     (struct sockaddr *) &their_addr,
 		     sizeof (their_addr)) < 0) {
 	    if (running) {
 	       perror ("sendto() reveal_socket, error!\n");
-	       return 0;
+	       network_error = 1;
 	    }
 	 }
 

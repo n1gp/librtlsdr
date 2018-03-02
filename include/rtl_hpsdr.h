@@ -183,6 +183,8 @@ pthread_t hpsdrsim_thread_id;
 void* hpsdrsim_thread(void* arg);
 pthread_t watchdog_thread_id;
 void* hpsdrsim_watchdog_thread(void* arg);
+pthread_t discovery_thread_id;
+void* hpsdrsim_discovery_thread(void* arg);
 void* hpsdrsim_sendiq_thr_func(void* arg);
 void* rtl_read_thr_func(void* arg);
 void hpsdrsim_stop_threads();
