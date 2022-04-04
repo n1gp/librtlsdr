@@ -3,10 +3,15 @@ VER=0.5.4.2
 # Must be LOWERCASE
 USER=8ch9azbsfifz
 REPO=librtlsdr
-TAG=docker.pkg.github.com/${USER}/${REPO}/rtl_hpsdr
+#TAG=ghcr.io/${USER}/${REPO}/librtlsdr
+TAG=rtl_hpsdr
 
 build:
 	docker build . -t ${TAG}:${VER} -t ${TAG}:latest
+
+build_multi:
+	docker buildx build --platform linux/amd64,linux/arm64,linux/i386,linux/arm/v7 --push -t ${TAG}:${VER} .
+
 
 run:
 	docker run --rm -it -p 8080:8080 ${TAG}:${VER}
