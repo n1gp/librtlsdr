@@ -20,7 +20,10 @@ cmake ..
 make
 
 
-# 
+# WIP - Config
+
+## Kernel module
+ 
 /etc/modprobe.d/rtlsdr.conf
 blacklist dvb_usb_rtl28xxu
 
@@ -31,7 +34,7 @@ Create a new file as root named /etc/udev/rules.d/20.rtlsdr.rules that contains 
 
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", GROUP="adm", MODE="0666", SYMLINK+="rtl_sdr"
 
-
+## Direct Sampling for HF
 
 rtl_eeprom 
 Found 1 device(s):
@@ -98,3 +101,8 @@ Please replug the device for changes to take effect.
 
 
 
+## Configuration of local IP and container
+...
+
+## Link with docker-cwskimmer configuration
+...
