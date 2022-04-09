@@ -15,7 +15,8 @@ RUN make install
 
 WORKDIR /app
 ADD ./conf/rtl_hpsdr.conf /app/
-
+ADD ./conf/startup.sh /app
 ENV LD_LIBRARY_PATH=/usr/local/lib
 
-CMD ["rtl_hpsdr", "-c", "/app/rtl_hpsdr.conf"]
+#CMD ["rtl_hpsdr", "-c", "/app/rtl_hpsdr.conf"]
+CMD ["/app/startup.sh"]
