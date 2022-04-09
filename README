@@ -61,7 +61,7 @@ In some cases you may want to force direct sampling to be always on. For example
 
 
 
-./src/rtl_eeprom -q -y
+./src/rtl_eeprom -q y
 Found 1 device(s):
   0:  Generic RTL2832U OEM
 
