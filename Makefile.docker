@@ -14,7 +14,8 @@ build_multi:
 
 
 run:
-	docker run --rm -it -p 1024:1024 ${TAG}:${VER}
+	#docker run --rm -it -p 1024:1024 ${TAG}:${VER}
+	docker run --rm -it -p 1024:1024 --privileged -v /dev/bus/usb:/dev/bus/usb  ${TAG}:${VER}
 
 push:
 	docker push ${TAG}:${VER}
