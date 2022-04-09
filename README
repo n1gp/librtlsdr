@@ -19,3 +19,41 @@ cd build
 cmake ..
 make
 
+
+# 
+/etc/modprobe.d/rtlsdr.conf
+blacklist dvb_usb_rtl28xxu
+
+
+The important parts are "0bda" (the vendor id) and "2838" (the product id).
+
+Create a new file as root named /etc/udev/rules.d/20.rtlsdr.rules that contains the following line:
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", GROUP="adm", MODE="0666", SYMLINK+="rtl_sdr"
+
+
+
+rtl_eeprom 
+Found 1 device(s):
+  0:  Generic RTL2832U OEM
+
+Using device 0: Generic RTL2832U OEM
+Found Rafael Micro R828D tuner
+
+Current configuration:
+__________________________________________
+Vendor ID:		0x0bda
+Product ID:		0x2838
+Manufacturer:		Realtek
+Product:		RTL2838UHIDIR
+Serial number:		00000001
+Serial number enabled:	yes
+IR endpoint enabled:	yes
+Remote wakeup enabled:	no
+__________________________________________
+
+
+
+Forcing Direct Sampling To be Always ON
+
+In some cases you may want to force direct sampling to be always on. For example, not all programs expose the direct sampling controls to the user, so in those programs it can be impossible to turn direct sampling mode on. To force it on, use our RTL-SDR-Blog driver branch, and use set the direct sampling always on flag in the EEPROM with the command "rtl_eeprom -q y". To disable forced direct sampling do the opposite command "rtl_eeprom -q n"
