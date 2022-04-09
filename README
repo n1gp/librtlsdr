@@ -57,3 +57,44 @@ __________________________________________
 Forcing Direct Sampling To be Always ON
 
 In some cases you may want to force direct sampling to be always on. For example, not all programs expose the direct sampling controls to the user, so in those programs it can be impossible to turn direct sampling mode on. To force it on, use our RTL-SDR-Blog driver branch, and use set the direct sampling always on flag in the EEPROM with the command "rtl_eeprom -q y". To disable forced direct sampling do the opposite command "rtl_eeprom -q n"
+
+
+
+
+./src/rtl_eeprom -q -y
+Found 1 device(s):
+  0:  Generic RTL2832U OEM
+
+Using device 0: Generic RTL2832U OEM
+Found Rafael Micro R828D tuner
+
+Current configuration:
+__________________________________________
+Vendor ID:		0x0bda
+Product ID:		0x2838
+Manufacturer:		Realtek
+Product:		RTL2838UHIDIR
+Serial number:		00000001
+Serial number enabled:	yes
+Bias-T Always ON:	no
+Direct Sampling Always ON:	no
+__________________________________________
+
+New configuration:
+__________________________________________
+Vendor ID:		0x0bda
+Product ID:		0x2838
+Manufacturer:		Realtek
+Product:		RTL2838UHIDIR
+Serial number:		00000001
+Serial number enabled:	yes
+Bias-T Always ON:	no
+Direct Sampling Always ON:	no
+__________________________________________
+Write new configuration to device [y/n]? y
+
+Configuration successfully written.
+Please replug the device for changes to take effect.
+
+
+
