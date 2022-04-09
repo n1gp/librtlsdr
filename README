@@ -115,3 +115,6 @@ he standard Osmocom version of rtl_tcp only allows for direct sampling on the I-
 better after configured once 
 
 ./src/librtlsdr/build/src/rtl_hpsdr -i 172.17.0.3 -d 3
+
+## Building
++ make -B -f Makefile.docker build     
