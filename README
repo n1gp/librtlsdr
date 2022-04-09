@@ -106,3 +106,12 @@ Please replug the device for changes to take effect.
 
 ## Link with docker-cwskimmer configuration
 ...
+
+## Starting in container:
+he standard Osmocom version of rtl_tcp only allows for direct sampling on the I-branch, which is useless as we need direct sampling on the Q-branch. Please see our RTL-SDR-Blog Drivers for a version that includes a -D direct sampling flag. The Releases page has a Windows release.
+
+./src/librtlsdr/build/src/rtl_hpsdr -i 172.17.0.3 -d 2
+
+better after configured once 
+
+./src/librtlsdr/build/src/rtl_hpsdr -i 172.17.0.3 -d 3
