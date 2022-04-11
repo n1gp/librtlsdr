@@ -1,10 +1,10 @@
-VER=0.5.4.3
+VER=0.5.4.4
 
 # Must be LOWERCASE
 USER=8ch9azbsfifz
 REPO=librtlsdr
-#TAG=ghcr.io/${USER}/${REPO}/librtlsdr
-TAG=rtl_hpsdr
+TAG=ghcr.io/${USER}/${REPO}/rtl_hpsdr
+#TAG=rtl_hpsdr
 
 build:
 	docker build . -t ${TAG}:${VER} -t ${TAG}:latest
