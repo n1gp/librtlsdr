@@ -3,7 +3,7 @@ VER=0.5.4.4
 # Must be LOWERCASE
 USER=8ch9azbsfifz
 REPO=librtlsdr
-TAG=ghcr.io/${USER}/${REPO}/rtl_hpsdr
+TAG=docker.pkg.github.com/${USER}/${REPO}/rtl_hpsdr
 #TAG=rtl_hpsdr
 
 build:
