@@ -8,4 +8,4 @@ mkdir build
 cd build 
 cmake -DCMAKE_C_FLAGS=-fcommon  ..
 make 
-make install
+sudo make install
