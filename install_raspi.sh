@@ -9,3 +9,6 @@ cd build
 cmake -DCMAKE_C_FLAGS=-fcommon  ..
 make 
 sudo make install
+
+
+sudo echo blacklist dvb_usb_rtl28xxu > /etc/modprobe.d/blacklist-dvb_usb_rtl28xxu.conf
