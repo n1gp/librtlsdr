@@ -1,7 +1,7 @@
 FROM debian
 
 RUN apt-get update && apt-get -y upgrade
-RUN apt-get install -y build-essential git cmake libfftw3-dev libusb-1.0-0-dev libfftw3-3 libusb-dev pkgconf libasound2-dev
+RUN apt-get install -y build-essential git cmake libfftw3-dev libusb-1.0-0-dev libusb-dev pkgconf libasound2-dev
 RUN apt-get -qqy autoclean && rm -rf /tmp/* /var/tmp/*
 
 
