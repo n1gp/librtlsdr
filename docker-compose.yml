@@ -1,0 +1,7 @@
+app:
+    build: .
+    privileged: true
+    ports:
+        - 1024:1024
+    volumes: 
+        - /dev/bus/usb:/dev/bus/usb
