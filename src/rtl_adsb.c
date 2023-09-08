@@ -45,7 +45,9 @@
 
 #ifdef _WIN32
 #define sleep Sleep
+#if defined(_MSC_VER) && (_MSC_VER < 1800)
 #define round(x) (x > 0.0 ? floor(x + 0.5): ceil(x - 0.5))
+#endif
 #endif
 
 #define ADSB_RATE			2000000
@@ -94,6 +96,7 @@ void usage(void)
 		"\t[-e allowed_errors (default: 5)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
+		"\t[-T enable bias-T on GPIO PIN 0 (works for rtl-sdr.com v3 dongles)]\n"
 		"\tfilename (a '-' dumps samples to stdout)\n"
 		"\t (omitting the filename also uses stdout)\n\n"
 		"Streaming with netcat:\n"
@@ -120,6 +123,7 @@ sighandler(int signum)
 #else
 static void sighandler(int signum)
 {
+	signal(SIGPIPE, SIG_IGN);
 	fprintf(stderr, "Signal caught, exiting!\n");
 	do_exit = 1;
 	rtlsdr_cancel_async(dev);
@@ -180,7 +184,7 @@ int magnitute(uint8_t *buf, int len)
 	return len/2;
 }
 
-inline uint16_t single_manchester(uint16_t a, uint16_t b, uint16_t c, uint16_t d)
+static inline uint16_t single_manchester(uint16_t a, uint16_t b, uint16_t c, uint16_t d)
 /* takes 4 consecutive real samples, return 0 or 1, BADSAMPLE on error */
 {
 	int bit, bit_p;
@@ -221,17 +225,17 @@ inline uint16_t single_manchester(uint16_t a, uint16_t b, uint16_t c, uint16_t d
 	return BADSAMPLE;
 }
 
-inline uint16_t min16(uint16_t a, uint16_t b)
+static inline uint16_t min16(uint16_t a, uint16_t b)
 {
 	return a<b ? a : b;
 }
 
-inline uint16_t max16(uint16_t a, uint16_t b)
+static inline uint16_t max16(uint16_t a, uint16_t b)
 {
 	return a>b ? a : b;
 }
 
-inline int preamble(uint16_t *buf, int i)
+static inline int preamble(uint16_t *buf, int i)
 /* returns 0/1 for preamble at index i */
 {
 	int i2;
@@ -369,11 +373,12 @@ int main(int argc, char **argv)
 	int dev_index = 0;
 	int dev_given = 0;
 	int ppm_error = 0;
+	int enable_biastee = 0;
 	pthread_cond_init(&ready, NULL);
 	pthread_mutex_init(&ready_m, NULL);
 	squares_precompute();
 
-	while ((opt = getopt(argc, argv, "d:g:p:e:Q:VS")) != -1)
+	while ((opt = getopt(argc, argv, "d:g:p:e:Q:VST")) != -1)
 	{
 		switch (opt) {
 		case 'd':
@@ -397,6 +402,9 @@ int main(int argc, char **argv)
 			break;
 		case 'Q':
 			quality = (int)(atof(optarg) * 10);
+			break;
+		case 'T':
+			enable_biastee = 1;
 			break;
 		default:
 			usage();
@@ -468,6 +476,10 @@ int main(int argc, char **argv)
 	/* Set the sample rate */
 	verbose_set_sample_rate(dev, ADSB_RATE);
 
+	rtlsdr_set_bias_tee(dev, enable_biastee);
+	if (enable_biastee)
+		fprintf(stderr, "activated bias-T on GPIO PIN 0\n");
+
 	/* Reset endpoint before we start reading from it (mandatory) */
 	verbose_reset_buffer(dev);
 
@@ -481,6 +493,8 @@ int main(int argc, char **argv)
 	else {
 		fprintf(stderr, "\nLibrary error %d, exiting...\n", r);}
 	rtlsdr_cancel_async(dev);
+	pthread_cancel(demod_thread);
+	pthread_join(demod_thread, NULL);
 	pthread_cond_destroy(&ready);
 	pthread_mutex_destroy(&ready_m);
 

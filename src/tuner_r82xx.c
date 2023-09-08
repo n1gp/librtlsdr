@@ -24,7 +24,6 @@
 
 #include <stdio.h>
 #include <stdint.h>
-#include <errno.h>
 #include <string.h>
 
 #include "rtlsdr_i2c.h"
@@ -33,6 +32,10 @@
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #define MHZ(x)		((x)*1000*1000)
 #define KHZ(x)		((x)*1000)
+
+#define HF 1
+#define VHF 2
+#define UHF 3
 
 /*
  * Static constants
@@ -331,8 +334,14 @@ static int r82xx_read(struct r82xx_priv *priv, uint8_t reg, uint8_t *val, int le
 	priv->buf[0] = reg;
 
 	rc = rtlsdr_i2c_write_fn(priv->rtl_dev, priv->cfg->i2c_addr, priv->buf, 1);
-	if (rc < 1)
-		return rc;
+
+	if (rc != 1) {
+		fprintf(stderr, "%s: i2c wr failed=%d reg=%02x len=%d\n",
+			   __FUNCTION__, rc, reg, 1);
+		if (rc < 0)
+			return rc;
+		return -1;
+	}
 
 	rc = rtlsdr_i2c_read_fn(priv->rtl_dev, priv->cfg->i2c_addr, p, len);
 
@@ -449,7 +458,10 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 		return rc;
 
 	/* set VCO current = 100 */
-	rc = r82xx_write_reg_mask(priv, 0x12, 0x80, 0xe0);
+	/* rc = r82xx_write_reg_mask(priv, 0x12, 0x80, 0xe0); */
+
+	/* RTL-SDR Blog Modification: Set VCO current to MAX */
+	rc = r82xx_write_reg_mask(priv, 0x12, 0x06, 0xff);
 	if (rc < 0)
 		return rc;
 
@@ -541,7 +553,9 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 
 		if (!i) {
 			/* Didn't lock. Increase VCO current */
-			rc = r82xx_write_reg_mask(priv, 0x12, 0x60, 0xe0);
+			/* rc = r82xx_write_reg_mask(priv, 0x12, 0x60, 0xe0); */
+			/* RTL-SDR Blog Hack: Set max current */
+			rc = r82xx_write_reg_mask(priv, 0x12, 0x06, 0xff);
 			if (rc < 0)
 				return rc;
 		}
@@ -664,6 +678,8 @@ static int r82xx_sysfreq_sel(struct r82xx_priv *priv, uint32_t freq,
 	rc = r82xx_write_reg_mask(priv, 0x11, cp_cur, 0x38);
 	if (rc < 0)
 		return rc;
+	/* RTL-SDR Blog Hack. Improve L-band performance by setting PLL drop out to 2.0v */
+        div_buf_cur = 0xa0;
 	rc = r82xx_write_reg_mask(priv, 0x17, div_buf_cur, 0x30);
 	if (rc < 0)
 		return rc;
@@ -771,78 +787,18 @@ static int r82xx_set_tv_standard(struct r82xx_priv *priv,
 	uint8_t lt_att, flt_ext_widest, polyfil_cur;
 	int need_calibration;
 
-	if (delsys == SYS_ISDBT) {
-		if_khz = 4063;
-		filt_cal_lo = 59000;
-		filt_gain = 0x10;	/* +3db, 6mhz on */
-		img_r = 0x00;		/* image negative */
-		filt_q = 0x10;		/* r10[4]:low q(1'b1) */
-		hp_cor = 0x6a;		/* 1.7m disable, +2cap, 1.25mhz */
-		ext_enable = 0x40;	/* r30[6], ext enable; r30[5]:0 ext at lna max */
-		loop_through = 0x00;	/* r5[7], lt on */
-		lt_att = 0x00;		/* r31[7], lt att enable */
-		flt_ext_widest = 0x00;	/* r15[7]: flt_ext_wide off */
-		polyfil_cur = 0x60;	/* r25[6:5]:min */
-	} else {
-		if (bw <= 6) {
-			if_khz = 3570;
-			filt_cal_lo = 56000;	/* 52000->56000 */
-			filt_gain = 0x10;	/* +3db, 6mhz on */
-			img_r = 0x00;		/* image negative */
-			filt_q = 0x10;		/* r10[4]:low q(1'b1) */
-			hp_cor = 0x6b;		/* 1.7m disable, +2cap, 1.0mhz */
-			ext_enable = 0x60;	/* r30[6]=1 ext enable; r30[5]:1 ext at lna max-1 */
-			loop_through = 0x00;	/* r5[7], lt on */
-			lt_att = 0x00;		/* r31[7], lt att enable */
-			flt_ext_widest = 0x00;	/* r15[7]: flt_ext_wide off */
-			polyfil_cur = 0x60;	/* r25[6:5]:min */
-		} else if (bw == 7) {
-#if 0
-			/*
-			 * There are two 7 MHz tables defined on the original
-			 * driver, but just the second one seems to be visible
-			 * by rtl2832. Keep this one here commented, as it
-			 * might be needed in the future
-			 */
-
-			if_khz = 4070;
-			filt_cal_lo = 60000;
-			filt_gain = 0x10;	/* +3db, 6mhz on */
-			img_r = 0x00;		/* image negative */
-			filt_q = 0x10;		/* r10[4]:low q(1'b1) */
-			hp_cor = 0x2b;		/* 1.7m disable, +1cap, 1.0mhz */
-			ext_enable = 0x60;	/* r30[6]=1 ext enable; r30[5]:1 ext at lna max-1 */
-			loop_through = 0x00;	/* r5[7], lt on */
-			lt_att = 0x00;		/* r31[7], lt att enable */
-			flt_ext_widest = 0x00;	/* r15[7]: flt_ext_wide off */
-			polyfil_cur = 0x60;	/* r25[6:5]:min */
-#endif
-			/* 7 MHz, second table */
-			if_khz = 4570;
-			filt_cal_lo = 63000;
-			filt_gain = 0x10;	/* +3db, 6mhz on */
-			img_r = 0x00;		/* image negative */
-			filt_q = 0x10;		/* r10[4]:low q(1'b1) */
-			hp_cor = 0x2a;		/* 1.7m disable, +1cap, 1.25mhz */
-			ext_enable = 0x60;	/* r30[6]=1 ext enable; r30[5]:1 ext at lna max-1 */
-			loop_through = 0x00;	/* r5[7], lt on */
-			lt_att = 0x00;		/* r31[7], lt att enable */
-			flt_ext_widest = 0x00;	/* r15[7]: flt_ext_wide off */
-			polyfil_cur = 0x60;	/* r25[6:5]:min */
-		} else {
-			if_khz = 4570;
-			filt_cal_lo = 68500;
-			filt_gain = 0x10;	/* +3db, 6mhz on */
-			img_r = 0x00;		/* image negative */
-			filt_q = 0x10;		/* r10[4]:low q(1'b1) */
-			hp_cor = 0x0b;		/* 1.7m disable, +0cap, 1.0mhz */
-			ext_enable = 0x60;	/* r30[6]=1 ext enable; r30[5]:1 ext at lna max-1 */
-			loop_through = 0x00;	/* r5[7], lt on */
-			lt_att = 0x00;		/* r31[7], lt att enable */
-			flt_ext_widest = 0x00;	/* r15[7]: flt_ext_wide off */
-			polyfil_cur = 0x60;	/* r25[6:5]:min */
-		}
-	}
+	/* BW < 6 MHz */
+	if_khz = 3570;
+	filt_cal_lo = 56000;	/* 52000->56000 */
+	filt_gain = 0x10;	/* +3db, 6mhz on */
+	img_r = 0x00;		/* image negative */
+	filt_q = 0x10;		/* r10[4]:low q(1'b1) */
+	hp_cor = 0x6b;		/* 1.7m disable, +2cap, 1.0mhz */
+	ext_enable = 0x60;	/* r30[6]=1 ext enable; r30[5]:1 ext at lna max-1 */
+	loop_through = 0x01;	/* r5[7], lt off */
+	lt_att = 0x00;		/* r31[7], lt att enable */
+	flt_ext_widest = 0x00;	/* r15[7]: flt_ext_wide off */
+	polyfil_cur = 0x60;	/* r25[6:5]:min */
 
 	/* Initialize the shadow registers */
 	memcpy(priv->regs, r82xx_init_array, sizeof(r82xx_init_array));
@@ -984,7 +940,6 @@ static int r82xx_read_gain(struct r82xx_priv *priv)
 	if (rc < 0)
 		return rc;
 
-	//TODO: looks wrong... <<1 >>3?
 	return ((data[3] & 0x0f) << 1) + ((data[3] & 0xf0) >> 4);
 }
 
@@ -994,7 +949,6 @@ static int r82xx_read_gain(struct r82xx_priv *priv)
  */
 
 #define VGA_BASE_GAIN	-47
-#define MANUAL_GAIN_VGA_INDEX 8
 static const int r82xx_vga_gain_steps[]  = {
 	0, 26, 26, 30, 42, 35, 24, 13, 14, 32, 36, 34, 35, 37, 35, 36
 };
@@ -1007,90 +961,45 @@ static const int r82xx_mixer_gain_steps[]  = {
 	0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8
 };
 
-enum rtl_sdr_gain_mode {
-	GAIN_MODE_AGC=0,
-	GAIN_MODE_MANUAL=1,
-	GAIN_MODE_LINEARITY=2,
-	GAIN_MODE_SENSITIVITY=3
-};
-
-#define GAIN_MODE_MAX 3
-
-#define SIZE_GAIN_TABLE	22
-
-static const struct gain_index_table {
-	uint8_t lna_gain_index[SIZE_GAIN_TABLE];
-	uint8_t mix_gain_index[SIZE_GAIN_TABLE];
-	uint8_t vga_gain_index[SIZE_GAIN_TABLE];
-} r82xx_gain_index_table[2] =
-{
-	{ // optimized for linearity
-	  {15,15,13,13,12,10, 9, 9, 8, 7, 7, 6, 6, 6, 6, 5, 5, 4, 3, 3, 2, 1}, // LNA
-	  {12,10,10, 9, 8, 7, 6, 6, 5, 5, 5, 5, 5, 4, 4, 4, 3, 3, 3, 2, 1, 0}, // Mixer
-	  {13,13,12,11,11,11,11,10,10,10, 9, 9, 8, 8, 7, 7, 6, 6, 5, 4, 4, 4}, // VGA
-	},
-	{ // optimized for sensitivty
-	  {15,15,13,13,13,13,13,13,13,13,13,12,11,11,10, 9, 8, 7, 6, 5, 4, 3}, // LNA
-	  {12,12,12,12,12,12,12,12,11,11,10,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0}, // Mixer
-	  {13,12,12,11,10, 9, 8, 7, 6, 5, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3}, // VGA
-	}
-};
-
-#define MAX_GAIN_TABLE_SIZE (sizeof(r82xx_lna_gain_steps)/sizeof(r82xx_lna_gain_steps[0]) +\
-	sizeof(r82xx_mixer_gain_steps)/sizeof(r82xx_mixer_gain_steps[0]))
-static int r82xx_gain_table_len;
-static int r82xx_gain_table[MAX_GAIN_TABLE_SIZE];
-
-int r82xx_set_gain(struct r82xx_priv *priv, int gain)
+int r82xx_set_gain(struct r82xx_priv *priv, int set_manual_gain, int gain)
 {
 	int rc;
 
-	if (priv->gain_mode) {
+	if (set_manual_gain) {
 		int i, total_gain = 0;
-		uint8_t mix_index = 0, lna_index = 0, vga_index = 0;
+		uint8_t mix_index = 0, lna_index = 0;
 		uint8_t data[4];
+
+		/* LNA auto off */
+		rc = r82xx_write_reg_mask(priv, 0x05, 0x10, 0x10);
+		if (rc < 0)
+			return rc;
+
+		 /* Mixer auto off */
+		rc = r82xx_write_reg_mask(priv, 0x07, 0, 0x10);
+		if (rc < 0)
+			return rc;
 
 		rc = r82xx_read(priv, 0x00, data, sizeof(data));
 		if (rc < 0)
 			return rc;
 
-		switch (priv->gain_mode) {
-		case GAIN_MODE_MANUAL: /* original algorithm */
-			/* set fixed VGA gain for now (16.3 dB) */
-			vga_index = MANUAL_GAIN_VGA_INDEX;
-
-			for (i = 0; i < 15; i++) {
-				if (total_gain >= gain)
-					break;
-
-				total_gain += r82xx_lna_gain_steps[++lna_index];
-
-				if (total_gain >= gain)
-					break;
-
-				total_gain += r82xx_mixer_gain_steps[++mix_index];
-			}
-			break;
-		case GAIN_MODE_LINEARITY:
-		case GAIN_MODE_SENSITIVITY:
-			{
-				const struct gain_index_table *t;
-				t = &r82xx_gain_index_table[priv->gain_mode == GAIN_MODE_LINEARITY ? 0 : 1 ];
-
-				for (i = r82xx_gain_table_len - 1; i>0; i--)
-					if (gain >= r82xx_gain_table[i])
-						break;
-
-				lna_index = t->lna_gain_index[SIZE_GAIN_TABLE-i-1];
-				mix_index = t->mix_gain_index[SIZE_GAIN_TABLE-i-1];
-				vga_index = t->vga_gain_index[SIZE_GAIN_TABLE-i-1];
-				break;
-			}
-		}
-		/* set VGA gain */
-		rc = r82xx_write_reg_mask(priv, 0x0c, vga_index, 0x9f);
+		/* set fixed VGA gain for now (16.3 dB) */
+		rc = r82xx_write_reg_mask(priv, 0x0c, 0x08, 0x9f);
 		if (rc < 0)
 			return rc;
+
+		for (i = 0; i < 15; i++) {
+			if (total_gain >= gain)
+				break;
+
+			total_gain += r82xx_lna_gain_steps[++lna_index];
+
+			if (total_gain >= gain)
+				break;
+
+			total_gain += r82xx_mixer_gain_steps[++mix_index];
+		}
 
 		/* set LNA gain */
 		rc = r82xx_write_reg_mask(priv, 0x05, lna_index, 0x0f);
@@ -1101,290 +1010,139 @@ int r82xx_set_gain(struct r82xx_priv *priv, int gain)
 		rc = r82xx_write_reg_mask(priv, 0x07, mix_index, 0x0f);
 		if (rc < 0)
 			return rc;
-#if 0
-		// DEBUG:  Dump indexes to gain table
-		printf ("Gain Table indexes: vga:%d, mix:%d, lna:%d\n",vga_index,mix_index,lna_index);
-		printf ("Gain Mode: %d\n",priv->gain_mode);
-		printf ("Gain Settings: gain:%d, total_gain:%d\n",gain, total_gain);
-#endif
+	} else {
+		/* LNA */
+		rc = r82xx_write_reg_mask(priv, 0x05, 0, 0x10);
+		if (rc < 0)
+			return rc;
+
+		/* Mixer */
+		rc = r82xx_write_reg_mask(priv, 0x07, 0x10, 0x10);
+		if (rc < 0)
+			return rc;
+
+		/* set fixed VGA gain for now (26.5 dB) */
+		rc = r82xx_write_reg_mask(priv, 0x0c, 0x0b, 0x9f);
+		if (rc < 0)
+			return rc;
 	}
 
 	return 0;
 }
 
-static void r82xx_compute_gain_table(struct r82xx_priv *priv);
+/* Bandwidth contribution by low-pass filter. */
+static const int r82xx_if_low_pass_bw_table[] = {
+	1700000, 1600000, 1550000, 1450000, 1200000, 900000, 700000, 550000, 450000, 350000
+};
 
-int r82xx_enable_manual_gain(struct r82xx_priv *priv, uint8_t gain_mode)
+#define FILT_HP_BW1 350000
+#define FILT_HP_BW2 380000
+int r82xx_set_bandwidth(struct r82xx_priv *priv, int bw, uint32_t rate)
 {
 	int rc;
-	uint8_t data[4];
+	unsigned int i;
+	int real_bw = 0;
+	uint8_t reg_0a;
+	uint8_t reg_0b;
 
-	if (gain_mode > GAIN_MODE_MAX)
-		gain_mode = GAIN_MODE_MAX;
+	if (bw > 7000000) {
+		// BW: 8 MHz
+		reg_0a = 0x10;
+		reg_0b = 0x0b;
+		priv->int_freq = 4570000;
+	} else if (bw > 6000000) {
+		// BW: 7 MHz
+		reg_0a = 0x10;
+		reg_0b = 0x2a;
+		priv->int_freq = 4570000;
+	} else if (bw > r82xx_if_low_pass_bw_table[0] + FILT_HP_BW1 + FILT_HP_BW2) {
+		// BW: 6 MHz
+		reg_0a = 0x10;
+		reg_0b = 0x6b;
+		priv->int_freq = 3570000;
+	} else {
+		reg_0a = 0x00;
+		reg_0b = 0x80;
+		priv->int_freq = 2300000;
 
-	if (priv->gain_mode != gain_mode) {
-
-		rc = r82xx_read(priv, 0x00, data, sizeof(data));
-		if (rc < 0)
-			return rc;
-
-		if (gain_mode) {
-			/* LNA auto off */
-			rc = r82xx_write_reg_mask(priv, 0x05, 0x10, 0x10);
-			if (rc < 0)
-				return rc;
-
-			 /* Mixer auto off */
-			rc = r82xx_write_reg_mask(priv, 0x07, 0, 0x10);
-			if (rc < 0)
-				return rc;
-
+		if (bw > r82xx_if_low_pass_bw_table[0] + FILT_HP_BW1) {
+			bw -= FILT_HP_BW2;
+			priv->int_freq += FILT_HP_BW2;
+			real_bw += FILT_HP_BW2;
 		} else {
-			/* LNA */
-			rc = r82xx_write_reg_mask(priv, 0x05, 0, 0x10);
-			if (rc < 0)
-				return rc;
-
-			/* Mixer */
-			rc = r82xx_write_reg_mask(priv, 0x07, 0x10, 0x10);
-			if (rc < 0)
-				return rc;
-
-			/* set fixed VGA gain for now (26.5 dB) */
-			rc = r82xx_write_reg_mask(priv, 0x0c, 0x0b, 0x9f);
-			if (rc < 0)
-				return rc;
+			reg_0b |= 0x20;
 		}
-		rc = r82xx_read(priv, 0x00, data, sizeof(data));
-		if (rc < 0)
-			return rc;
 
-		priv->gain_mode = gain_mode;
-		r82xx_compute_gain_table(priv);
+		if (bw > r82xx_if_low_pass_bw_table[0]) {
+			bw -= FILT_HP_BW1;
+			priv->int_freq += FILT_HP_BW1;
+			real_bw += FILT_HP_BW1;
+		} else {
+			reg_0b |= 0x40;
+		}
+
+		// find low-pass filter
+		for(i = 0; i < ARRAY_SIZE(r82xx_if_low_pass_bw_table); ++i) {
+			if (bw > r82xx_if_low_pass_bw_table[i])
+				break;
+		}
+		--i;
+		reg_0b |= 15 - i;
+		real_bw += r82xx_if_low_pass_bw_table[i];
+
+		priv->int_freq -= real_bw / 2;
 	}
 
-	if (priv->gain_mode == GAIN_MODE_MANUAL)
-		return 0; /* compatibility to old mode API */
-	return priv->gain_mode;
-}
-
-static int32_t LNA_stage[ARRAY_SIZE(r82xx_lna_gain_steps)];
-static int32_t Mixer_stage[ARRAY_SIZE(r82xx_mixer_gain_steps)];
-static int32_t IF_stage[ARRAY_SIZE(r82xx_vga_gain_steps)];
-
-static void r82xx_calculate_stage_gains(void)
-{
-		int i;
-		LNA_stage[0] = r82xx_lna_gain_steps[0];
-		for (i=1; i<ARRAY_SIZE(r82xx_lna_gain_steps); i++)
-			LNA_stage[i] = LNA_stage[i-1] + r82xx_lna_gain_steps[i];
-
-		Mixer_stage[0] = r82xx_mixer_gain_steps[0];
-		for (i=1; i<ARRAY_SIZE(r82xx_mixer_gain_steps); i++)
-			Mixer_stage[i] = Mixer_stage[i-1] + r82xx_mixer_gain_steps[i];
-
-		IF_stage[0] = VGA_BASE_GAIN;
-		for (i=1; i<ARRAY_SIZE(r82xx_vga_gain_steps); i++)
-			IF_stage[i] = IF_stage[i-1] + r82xx_vga_gain_steps[i];
-}
-
-int r82xx_get_tuner_gains(struct r82xx_priv *priv, const int **ptr, int *len)
-{
-	if (!len & !ptr)
-		return -1;
-	*len = r82xx_gain_table_len * sizeof(int);
-	*ptr = r82xx_gain_table;
-	return 0;
-}
-
-
-static const int r82xx_bandwidth_table_len = 9;
-static const int r82xx_bandwidth_table[]={ 300000, 400000, 550000,
-                       700000,1000000,1200000,1300000,1600000,2200000};
-static const uint8_t r82xx_bandwidth_table_0xb[]={0xe7,
-                   0xe8,0xe9,0xea,0xeb,0xec,0xed,0xef,0x51};
-static const int r82xx_if_freq_table[]  ={2150000,2100000,2050000,
-                      1700000,1550000,1350000,1300000,1200000,4700000};
-
-int r82xx_set_bandwidth(struct r82xx_priv *priv, int bandwidth,  uint32_t rate)
-{
-	uint8_t val;
-	int rc;
-	int i;
-	/* find a filter setting that is close to the required bandwidth */
-
-	for(i=0; i<r82xx_bandwidth_table_len-1; i++)
-		/* bandwidth is compared to median of the current and next available bandwidth in the table */
-		if (bandwidth < (r82xx_bandwidth_table[i+1] + r82xx_bandwidth_table[i])/2)
-			break;
-
-	val=0xef;
-	rc=r82xx_write(priv, 0x0a, &val, 1);
+	rc = r82xx_write_reg_mask(priv, 0x0a, reg_0a, 0x10);
 	if (rc < 0)
 		return rc;
 
-	val=r82xx_bandwidth_table_0xb[i];
-	rc=r82xx_write(priv, 0x0b, &val, 1);
+	rc = r82xx_write_reg_mask(priv, 0x0b, reg_0b, 0xef);
 	if (rc < 0)
 		return rc;
-	priv->int_freq = r82xx_if_freq_table[i];
-	if(rate < 400000)
-		priv->int_freq-=240000;
+
 	return priv->int_freq;
 }
-
-int r82xx_get_tuner_bandwidths(struct r82xx_priv *priv, const int **ptr, int *len)
+int r82xx_toggle_test(struct r82xx_priv *priv, int toggle)
 {
-	if (!len & !ptr)
-		return -1;
-	*len = r82xx_bandwidth_table_len * sizeof(int);
-	*ptr = r82xx_bandwidth_table;
-	return 0;
-}
+	int rc;
 
-
-static void r82xx_compute_gain_table(struct r82xx_priv *priv)
-{
-	int i;
-
-	switch (priv->gain_mode) {
-		case GAIN_MODE_AGC: 
-		case GAIN_MODE_MANUAL: 
-		{
-			int len = 0, total_gain = 0;
-			r82xx_gain_table[len++] = 0;
-			for (i=1; i<16; i++) {
-				total_gain += r82xx_lna_gain_steps[i];
-				if (total_gain > r82xx_gain_table[len-1])
-					r82xx_gain_table[len++] = total_gain;
-				total_gain += r82xx_mixer_gain_steps[i];
-				if (total_gain > r82xx_gain_table[len-1])
-					r82xx_gain_table[len++] = total_gain;
-			}
-			r82xx_gain_table_len = len;
-			break;
-		}
-		case GAIN_MODE_LINEARITY:
-		case GAIN_MODE_SENSITIVITY: 
-		{
-			const struct gain_index_table *t;
-			t = &r82xx_gain_index_table[priv->gain_mode == GAIN_MODE_LINEARITY ? 0 : 1 ];
-			for (i=0; i<SIZE_GAIN_TABLE; i++)
-				r82xx_gain_table[i] =
-					LNA_stage[t->lna_gain_index[SIZE_GAIN_TABLE-i-1]] +
-					Mixer_stage[t->mix_gain_index[SIZE_GAIN_TABLE-i-1]] +
-					IF_stage[t->vga_gain_index[SIZE_GAIN_TABLE-i-1]] -
-					IF_stage[MANUAL_GAIN_VGA_INDEX]; // normalize to same VGA gain as GAIN_MODE_MANUAL
-			r82xx_gain_table_len = SIZE_GAIN_TABLE;
-			break;
-		}
+	if (toggle)
+	{
+		fprintf(stderr, "TOGGLE ON \n");
+		rc = r82xx_write_reg_mask(priv, 0x17, 0x08, 0x08); /* open_d notch on */
 	}
-}
-
-static int r82xx_set_lna_gain(struct r82xx_priv *priv, int32_t gain)
-{
-	uint32_t lna_index;
-	for(lna_index = 0; lna_index < ARRAY_SIZE(LNA_stage); ++lna_index) {
-		if(LNA_stage[lna_index] == gain) {
-			int rc;
-			uint8_t data[4];
-			rc = r82xx_read(priv, 0x00, data, sizeof(data));
-			if (rc < 0)
-				return rc;
-			/* set LNA gain */
-			rc = r82xx_write_reg_mask(priv, 0x05, lna_index, 0x0f);
-			if (rc < 0)
-				return rc;
-			return 0;
-		}
-	}
-	return -EINVAL;
-}
-
-static int r82xx_set_mixer_gain(struct r82xx_priv *priv, int32_t gain)
-{
-	uint32_t mixer_index;
-	for(mixer_index = 0; mixer_index < ARRAY_SIZE(Mixer_stage); ++mixer_index) {
-		if(Mixer_stage[mixer_index] == gain) {
-			uint8_t data[4];
-			int rc;
-			rc = r82xx_read(priv, 0x00, data, sizeof(data));
-			if (rc < 0)
-				return rc;
-
-			/* set Mixer gain */
-			rc = r82xx_write_reg_mask(priv, 0x07, mixer_index, 0x0f);
-			if (rc < 0)
-				return rc;
-			return 0;
-		}
-	}
-	return -EINVAL;
-}
-
-static int r82xx_set_VGA_gain(struct r82xx_priv *priv, int32_t gain)
-{
-	uint32_t IF_index;
-	for(IF_index = 0; IF_index < ARRAY_SIZE(IF_stage); ++IF_index) {
-		if(IF_stage[IF_index] == gain) {
-			uint8_t data[4];
-			int rc;
-			rc = r82xx_read(priv, 0x00, data, sizeof(data));
-			if (rc < 0)
-				return rc;
-			/* set VGA gain */
-			rc = r82xx_write_reg_mask(priv, 0x0c, IF_index, 0x9f); // TODO 0x0F or 0x9F?
-			if (rc < 0)
-				return rc;
-			return 0;
-		}
-	}
-	return -EINVAL;
-}
-
-int r82xx_get_tuner_stage_gains(struct r82xx_priv *priv, uint8_t stage, const int32_t **gains, const char **description)
-{
-	switch(stage) {
-		case 0: {
-			static const char LNA_desc[] = "LNA";
-
-			*gains = LNA_stage;
-			*description = LNA_desc;
-			return ARRAY_SIZE(LNA_stage);
-		}
-		case 1: {
-			static const char Mixer_desc[] = "Mixer";
-
-			*gains = Mixer_stage;
-			*description = Mixer_desc;
-			return ARRAY_SIZE(Mixer_stage);
-		}
-		case 2: {
-			static const char IF_desc[] = "IF";
-
-			*gains = IF_stage;
-			*description = IF_desc;
-			return ARRAY_SIZE(IF_stage);
-		}
-	}
-	return 0;
-}
-
-int r82xx_set_tuner_stage_gain(struct r82xx_priv *priv, uint8_t stage, int32_t gain)
-{
-	if (stage==0)
-		return r82xx_set_lna_gain(priv, gain);
-	else if (stage==1)
-		return r82xx_set_mixer_gain(priv, gain);
 	else
-		return r82xx_set_VGA_gain(priv, gain);
+	{
+		fprintf(stderr, "TOGGLE OFF \n");
+		rc = r82xx_write_reg_mask(priv, 0x17, 0x00, 0x08); /* open_d notch off */
+	}
+
+	return rc;
 }
+#undef FILT_HP_BW1
+#undef FILT_HP_BW2
 
 int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq)
 {
 	int rc = -1;
-	uint32_t lo_freq = freq + priv->int_freq;
+	int is_rtlsdr_blog_v4;
+	uint32_t upconvert_freq;
+	uint32_t lo_freq;
 	uint8_t air_cable1_in;
+	uint8_t open_d;
+	uint8_t band;
+	uint8_t cable_2_in;
+	uint8_t cable_1_in;
+	uint8_t air_in;
+
+	is_rtlsdr_blog_v4 = rtlsdr_check_dongle_model(priv->rtl_dev, "RTLSDRBlog", "Blog V4");
+
+	/* if it's an RTL-SDR Blog V4, automatically upconvert by 28.8 MHz if we tune to HF
+	 * so that we don't need to manually set any upconvert offset in the SDR software */
+	upconvert_freq = is_rtlsdr_blog_v4 ? ((freq < MHZ(28.8)) ? (freq + MHZ(28.8)) : freq) : freq;
+
+	lo_freq = upconvert_freq + priv->int_freq;
 
 	rc = r82xx_set_mux(priv, lo_freq);
 	if (rc < 0)
@@ -1394,6 +1152,49 @@ int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq)
 	if (rc < 0 || !priv->has_lock)
 		goto err;
 
+	if (is_rtlsdr_blog_v4) {
+		/* determine if notch filters should be on or off notches are turned OFF
+		 * when tuned within the notch band and ON when tuned outside the notch band.
+		 */
+		open_d = (freq <= MHZ(2.2) || (freq >= MHZ(85) && freq <= MHZ(112)) || (freq >= MHZ(172) && freq <= MHZ(242))) ? 0x00 : 0x08;
+		rc = r82xx_write_reg_mask(priv, 0x17, open_d, 0x08);
+
+		if (rc < 0)
+			return rc;
+
+		/* select tuner band based on frequency and only switch if there is a band change
+		 *(to avoid excessive register writes when tuning rapidly)
+		 */
+		band = (freq <= MHZ(28.8)) ? HF : ((freq > MHZ(28.8) && freq < MHZ(250)) ? VHF : UHF);
+
+		/* switch between tuner inputs on the RTL-SDR Blog V4 */
+		if (band != priv->input) {
+			priv->input = band;
+
+			/* activate cable 2 (HF input) */
+			cable_2_in = (band == HF) ? 0x08 : 0x00;
+			rc = r82xx_write_reg_mask(priv, 0x06, cable_2_in, 0x08);
+
+			if (rc < 0)
+				goto err;
+
+			/* activate cable 1 (VHF input) */
+			cable_1_in = (band == VHF) ? 0x40 : 0x00;
+			rc = r82xx_write_reg_mask(priv, 0x05, cable_1_in, 0x40);
+
+			if (rc < 0)
+				goto err;
+
+			/* activate air_in (UHF input) */
+			air_in = (band == UHF) ? 0x00 : 0x20;
+			rc = r82xx_write_reg_mask(priv, 0x05, air_in, 0x20);
+
+			if (rc < 0)
+				goto err;
+		}
+	}
+	else /* Standard R828D dongle*/
+	{
 	/* switch between 'Cable1' and 'Air-In' inputs on sticks with
 	 * R828D tuner. We switch at 345 MHz, because that's where the
 	 * noise-floor has about the same level with identical LNA
@@ -1404,6 +1205,7 @@ int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq)
 	    (air_cable1_in != priv->input)) {
 		priv->input = air_cable1_in;
 		rc = r82xx_write_reg_mask(priv, 0x05, air_cable1_in, 0x60);
+		}
 	}
 
 err:
@@ -1427,7 +1229,7 @@ int r82xx_standby(struct r82xx_priv *priv)
 	rc = r82xx_write_reg(priv, 0x06, 0xb1);
 	if (rc < 0)
 		return rc;
-	rc = r82xx_write_reg(priv, 0x05, 0x03);
+	rc = r82xx_write_reg(priv, 0x05, 0xa0);
 	if (rc < 0)
 		return rc;
 	rc = r82xx_write_reg(priv, 0x07, 0x3a);
@@ -1541,9 +1343,6 @@ int r82xx_init(struct r82xx_priv *priv)
 		goto err;
 
 	rc = r82xx_sysfreq_sel(priv, 0, TUNER_DIGITAL_TV, SYS_DVBT);
-
-	r82xx_calculate_stage_gains();
-	r82xx_compute_gain_table(priv);
 
 	priv->init_done = 1;
 

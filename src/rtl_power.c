@@ -53,7 +53,7 @@
 #include <io.h>
 #include "getopt/getopt.h"
 #define usleep(x) Sleep(x/1000)
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && (_MSC_VER < 1800)
 #define round(x) (x > 0.0 ? floor(x + 0.5): ceil(x - 0.5))
 #endif
 #define _USE_MATH_DEFINES
@@ -133,6 +133,7 @@ void usage(void)
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-p ppm_error (default: 0)]\n"
+		"\t[-T enable bias-T on GPIO PIN 0 (works for rtl-sdr.com v3 dongles)]\n"
 		"\tfilename (a '-' dumps samples to stdout)\n"
 		"\t (omitting the filename also uses stdout)\n"
 		"\n"
@@ -194,6 +195,7 @@ sighandler(int signum)
 #else
 static void sighandler(int signum)
 {
+	signal(SIGPIPE, SIG_IGN);
 	do_exit++;
 	multi_bail();
 }
@@ -220,7 +222,7 @@ int cic_9_tables[][10] = {
 	{9, -199, -362, 5303, -25505, 77489, -25505, 5303, -362, -199},
 };
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && (_MSC_VER < 1800)
 double log2(double n)
 {
 	return log(n) / log(2.0);
@@ -249,7 +251,7 @@ void sine_table(int size)
 	}
 }
 
-inline int16_t FIX_MPY(int16_t a, int16_t b)
+static inline int16_t FIX_MPY(int16_t a, int16_t b)
 /* fixed point multiply and scale */
 {
 	int c = ((int)a * (int)b) >> 14;
@@ -436,8 +438,16 @@ void frequency_range(char *arg, double crop)
 	/* hacky string parsing */
 	start = arg;
 	stop = strchr(start, ':') + 1;
+	if (stop == (char *)1) {
+		fprintf(stderr, "Bad frequency range specification: %s\n", arg);
+		exit(1);
+	}
 	stop[-1] = '\0';
 	step = strchr(stop, ':') + 1;
+	if (step == (char *)1) {
+		fprintf(stderr, "Bad frequency range specification: %s\n", arg);
+		exit(1);
+	}
 	step[-1] = '\0';
 	lower = (int)atofs(start);
 	upper = (int)atofs(stop);
@@ -771,6 +781,7 @@ int main(int argc, char **argv)
 	int single = 0;
 	int direct_sampling = 0;
 	int offset_tuning = 0;
+	int enable_biastee = 0;
 	double crop = 0.0;
 	char *freq_optarg;
 	time_t next_tick;
@@ -781,7 +792,7 @@ int main(int argc, char **argv)
 	double (*window_fn)(int, int) = rectangle;
 	freq_optarg = "";
 
-	while ((opt = getopt(argc, argv, "f:i:s:t:d:g:p:e:w:c:F:1PDOh")) != -1) {
+	while ((opt = getopt(argc, argv, "f:i:s:t:d:g:p:e:w:c:F:1PDOhT")) != -1) {
 		switch (opt) {
 		case 'f': // lower:upper:bin_size
 			freq_optarg = strdup(optarg);
@@ -848,6 +859,9 @@ int main(int argc, char **argv)
 		case 'F':
 			boxcar = 0;
 			comp_fir_size = atoi(optarg);
+			break;
+		case 'T':
+			enable_biastee = 1;
 			break;
 		case 'h':
 		default:
@@ -924,6 +938,10 @@ int main(int argc, char **argv)
 	}
 
 	verbose_ppm_set(dev, ppm_error);
+
+	rtlsdr_set_bias_tee(dev, enable_biastee);
+	if (enable_biastee)
+		fprintf(stderr, "activated bias-T on GPIO PIN 0\n");
 
 	if (strcmp(filename, "-") == 0) { /* Write log to stdout */
 		file = stdout;

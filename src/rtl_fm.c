@@ -62,7 +62,7 @@
 #include <io.h>
 #include "getopt/getopt.h"
 #define usleep(x) Sleep(x/1000)
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && (_MSC_VER < 1800)
 #define round(x) (x > 0.0 ? floor(x + 0.5): ceil(x - 0.5))
 #endif
 #define _USE_MATH_DEFINES
@@ -193,6 +193,7 @@ void usage(void)
 		"\t    raw mode outputs 2x16 bit IQ pairs\n"
 		"\t[-s sample_rate (default: 24k)]\n"
 		"\t[-d device_index (default: 0)]\n"
+		"\t[-T enable bias-T on GPIO PIN 0 (works for rtl-sdr.com v3 dongles)]\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
 		"\t[-l squelch_level (default: 0/off)]\n"
 		//"\t    for fm squelch is inverted\n"
@@ -200,11 +201,12 @@ void usage(void)
 		"\t[-p ppm_error (default: 0)]\n"
 		"\t[-E enable_option (default: none)]\n"
 		"\t    use multiple -E to enable multiple options\n"
-		"\t    edge:   enable lower edge tuning\n"
-		"\t    dc:     enable dc blocking filter\n"
-		"\t    deemp:  enable de-emphasis filter\n"
-		"\t    direct: enable direct sampling\n"
-		"\t    offset: enable offset tuning\n"
+		"\t    edge:    enable lower edge tuning\n"
+		"\t    dc:      enable dc blocking filter\n"
+		"\t    deemp:   enable de-emphasis filter\n"
+		"\t    direct:  enable direct sampling 1 (usually I)\n"
+		"\t    direct2: enable direct sampling 2 (usually Q)\n"
+		"\t    offset:  enable offset tuning\n"
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"Experimental options:\n"
@@ -244,6 +246,7 @@ sighandler(int signum)
 #else
 static void sighandler(int signum)
 {
+	signal(SIGPIPE, SIG_IGN);
 	fprintf(stderr, "Signal caught, exiting!\n");
 	do_exit = 1;
 	rtlsdr_cancel_async(dongle.dev);
@@ -271,7 +274,7 @@ int cic_9_tables[][10] = {
 	{9, -199, -362, 5303, -25505, 77489, -25505, 5303, -362, -199},
 };
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) && (_MSC_VER < 1800)
 double log2(double n)
 {
 	return log(n) / log(2.0);
@@ -502,7 +505,7 @@ int polar_disc_lut(int ar, int aj, int br, int bj)
 
 	if (x_abs >= atan_lut_size) {
 		/* we can use linear range, but it is not necessary */
-		return (cj > 0) ? 1<<13 : -1<<13;
+		return (cj > 0) ? 1<<13 : -(1<<13);
 	}
 
 	if (x > 0) {
@@ -891,7 +894,7 @@ static void *controller_thread_fn(void *arg)
 	/* set up primary channel */
 	optimal_settings(s->freqs[0], demod.rate_in);
 	if (dongle.direct_sampling) {
-		verbose_direct_sampling(dongle.dev, 1);}
+		verbose_direct_sampling(dongle.dev, dongle.direct_sampling);}
 	if (dongle.offset_tuning) {
 		verbose_offset_tuning(dongle.dev);}
 
@@ -925,8 +928,21 @@ void frequency_range(struct controller_state *s, char *arg)
 	int i;
 	start = arg;
 	stop = strchr(start, ':') + 1;
+	if (stop == (char *)1) { // no stop or step given
+		s->freqs[s->freq_len] = (uint32_t) atofs(start);
+		s->freq_len++;
+		return;
+	}
 	stop[-1] = '\0';
 	step = strchr(stop, ':') + 1;
+	if (step == (char *)1) { // no step given
+		s->freqs[s->freq_len] = (uint32_t) atofs(start);
+		s->freq_len++;
+		s->freqs[s->freq_len] = (uint32_t) atofs(stop);
+		s->freq_len++;
+		stop[-1] = ':';
+		return;
+	}
 	step[-1] = '\0';
 	for(i=(int)atofs(start); i<=(int)atofs(stop); i+=(int)atofs(step))
 	{
@@ -1042,12 +1058,13 @@ int main(int argc, char **argv)
 	int r, opt;
 	int dev_given = 0;
 	int custom_ppm = 0;
+    int enable_biastee = 0;
 	dongle_init(&dongle);
 	demod_init(&demod);
 	output_init(&output);
 	controller_init(&controller);
 
-	while ((opt = getopt(argc, argv, "d:f:g:s:b:l:o:t:r:p:E:F:A:M:h")) != -1) {
+	while ((opt = getopt(argc, argv, "d:f:g:s:b:l:o:t:r:p:E:F:A:M:hT")) != -1) {
 		switch (opt) {
 		case 'd':
 			dongle.dev_index = verbose_device_search(optarg);
@@ -1104,6 +1121,8 @@ int main(int argc, char **argv)
 				demod.deemph = 1;}
 			if (strcmp("direct",  optarg) == 0) {
 				dongle.direct_sampling = 1;}
+			if (strcmp("direct2", optarg) == 0) {
+				dongle.direct_sampling = 2;}
 			if (strcmp("offset",  optarg) == 0) {
 				dongle.offset_tuning = 1;}
 			break;
@@ -1141,6 +1160,9 @@ int main(int argc, char **argv)
 				//demod.post_downsample = 4;
 				demod.deemph = 1;
 				demod.squelch_level = 0;}
+			break;
+		case 'T':
+			enable_biastee = 1;
 			break;
 		case 'h':
 		default:
@@ -1204,6 +1226,10 @@ int main(int argc, char **argv)
 		dongle.gain = nearest_gain(dongle.dev, dongle.gain);
 		verbose_gain_set(dongle.dev, dongle.gain);
 	}
+
+	rtlsdr_set_bias_tee(dongle.dev, enable_biastee);
+	if (enable_biastee)
+		fprintf(stderr, "activated bias-T on GPIO PIN 0\n");
 
 	verbose_ppm_set(dongle.dev, dongle.ppm_error);
 

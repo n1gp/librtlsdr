@@ -90,8 +90,6 @@ struct r82xx_priv {
 	enum r82xx_tuner_type		type;
 
 	uint32_t			bw;	/* in MHz */
-	int				gain_mode;
-	int				bw_index;
 
 	void *rtl_dev;
 };
@@ -116,14 +114,8 @@ enum r82xx_delivery_system {
 int r82xx_standby(struct r82xx_priv *priv);
 int r82xx_init(struct r82xx_priv *priv);
 int r82xx_set_freq(struct r82xx_priv *priv, uint32_t freq);
-int r82xx_set_gain(struct r82xx_priv *priv, int gain);
-
-int r82xx_enable_manual_gain(struct r82xx_priv *priv, uint8_t manual);
-int r82xx_get_tuner_gains(struct r82xx_priv *priv, const int **ptr, int *len);
-
-int r82xx_get_tuner_stage_gains(struct r82xx_priv *priv, uint8_t stage, const int32_t **gains, const char **description);
-int r82xx_set_tuner_stage_gain(struct r82xx_priv *priv, uint8_t stage, int32_t gain);
-
+int r82xx_set_gain(struct r82xx_priv *priv, int set_manual_gain, int gain);
 int r82xx_set_bandwidth(struct r82xx_priv *priv, int bandwidth,  uint32_t rate);
-int r82xx_get_tuner_bandwidths(struct r82xx_priv *priv, const int **ptr, int *len);
+int r82xx_toggle_test(struct r82xx_priv *priv, int toggle);
+
 #endif

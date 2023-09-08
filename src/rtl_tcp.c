@@ -30,10 +30,12 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <fcntl.h>
 #else
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include "getopt/getopt.h"
 #endif
 
@@ -53,6 +55,10 @@ typedef int socklen_t;
 #define SOCKET int
 #define SOCKET_ERROR -1
 #endif
+
+#define DEFAULT_PORT_STR "1234"
+#define DEFAULT_SAMPLE_RATE_HZ 2048000
+#define DEFAULT_MAX_NUM_BUFFERS 500
 
 static SOCKET s;
 
@@ -78,24 +84,28 @@ typedef struct { /* structure size must be multiple of 2 bytes */
 
 static rtlsdr_dev_t *dev = NULL;
 
+static int enable_biastee = 0;
 static int global_numq = 0;
 static struct llist *ll_buffers = 0;
-static int llbuf_num = 500;
+static int llbuf_num = DEFAULT_MAX_NUM_BUFFERS;
 
 static volatile int do_exit = 0;
 
+
 void usage(void)
 {
-	printf("rtl_tcp, an I/Q spectrum server for RTL2832 based DVB-T receivers\n\n"
-		"Usage:\t[-a listen address]\n"
-		"\t[-p listen port (default: 1234)]\n"
-		"\t[-f frequency to tune to [Hz]]\n"
-		"\t[-g gain (default: 0 for auto)]\n"
-		"\t[-s samplerate in Hz (default: 2048000 Hz)]\n"
-		"\t[-b number of buffers (default: 15, set by library)]\n"
-		"\t[-n max number of linked list buffers to keep (default: 500)]\n"
-		"\t[-d device index (default: 0)]\n"
-		"\t[-P ppm_error (default: 0)]\n");
+	printf("rtl_tcp, an I/Q spectrum server for RTL2832 based DVB-T receivers\n\n");
+	printf("Usage:\t[-a listen address]\n");
+	printf("\t[-p listen port (default: %s)]\n", DEFAULT_PORT_STR);
+	printf("\t[-f frequency to tune to [Hz]]\n");
+	printf("\t[-g gain (default: 0 for auto)]\n");
+	printf("\t[-s samplerate in Hz (default: %d Hz)]\n", DEFAULT_SAMPLE_RATE_HZ);
+	printf("\t[-b number of buffers (default: 15, set by library)]\n");
+	printf("\t[-n max number of linked list buffers to keep (default: %d)]\n", DEFAULT_MAX_NUM_BUFFERS);
+	printf("\t[-d device index (default: 0)]\n");
+	printf("\t[-P ppm_error (default: 0)]\n");
+	printf("\t[-T enable bias-T on GPIO PIN 0 (works for rtl-sdr.com v3 dongles)]\n");
+	printf("\t[-D enable direct sampling (default: off)]\n");
 	exit(1);
 }
 
@@ -135,6 +145,7 @@ sighandler(int signum)
 #else
 static void sighandler(int signum)
 {
+	signal(SIGPIPE, SIG_IGN);
 	fprintf(stderr, "Signal caught, exiting!\n");
 	rtlsdr_cancel_async(dev);
 	do_exit = 1;
@@ -355,6 +366,10 @@ static void *command_worker(void *arg)
 			printf("set tuner gain by index %d\n", ntohl(cmd.param));
 			set_gain_by_index(dev, ntohl(cmd.param));
 			break;
+		case 0x0e:
+			printf("set bias tee %d\n", ntohl(cmd.param));
+			rtlsdr_set_bias_tee(dev, (int)ntohl(cmd.param));
+			break;
 		default:
 			break;
 		}
@@ -365,21 +380,30 @@ static void *command_worker(void *arg)
 int main(int argc, char **argv)
 {
 	int r, opt, i;
-	char* addr = "127.0.0.1";
-	int port = 1234;
-	uint32_t frequency = 100000000, samp_rate = 2048000;
-	struct sockaddr_in local, remote;
+	char *addr = "127.0.0.1";
+	const char *port = DEFAULT_PORT_STR;
+	uint32_t frequency = 100000000, samp_rate = DEFAULT_SAMPLE_RATE_HZ;
+	struct sockaddr_storage local, remote;
+	struct addrinfo *ai;
+	struct addrinfo *aiHead;
+	struct addrinfo  hints;
+	char hostinfo[NI_MAXHOST];
+	char portinfo[NI_MAXSERV];
+	char remhostinfo[NI_MAXHOST];
+	char remportinfo[NI_MAXSERV];
+	int aiErr;
 	uint32_t buf_num = 0;
 	int dev_index = 0;
 	int dev_given = 0;
 	int gain = 0;
 	int ppm_error = 0;
+	int direct_sampling = 0;
 	struct llist *curelem,*prev;
 	pthread_attr_t attr;
 	void *status;
 	struct timeval tv = {1,0};
 	struct linger ling = {1,0};
-	SOCKET listensocket;
+	SOCKET listensocket = 0;
 	socklen_t rlen;
 	fd_set readfds;
 	u_long blockmode = 1;
@@ -391,7 +415,7 @@ int main(int argc, char **argv)
 	struct sigaction sigact, sigign;
 #endif
 
-	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:n:d:P:")) != -1) {
+	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:n:d:P:TD")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -407,10 +431,10 @@ int main(int argc, char **argv)
 			samp_rate = (uint32_t)atofs(optarg);
 			break;
 		case 'a':
-			addr = optarg;
+		        addr = strdup(optarg);
 			break;
 		case 'p':
-			port = atoi(optarg);
+		        port = strdup(optarg);
 			break;
 		case 'b':
 			buf_num = atoi(optarg);
@@ -420,6 +444,12 @@ int main(int argc, char **argv)
 			break;
 		case 'P':
 			ppm_error = atoi(optarg);
+			break;
+		case 'T':
+			enable_biastee = 1;
+			break;
+		case 'D':
+			direct_sampling = 1;
 			break;
 		default:
 			usage();
@@ -457,6 +487,9 @@ int main(int argc, char **argv)
 	SetConsoleCtrlHandler( (PHANDLER_ROUTINE) sighandler, TRUE );
 #endif
 
+	/* Set direct sampling */
+        if (direct_sampling)
+                verbose_direct_sampling(dev, 2);
 	/* Set the tuner error */
 	verbose_ppm_set(dev, ppm_error);
 
@@ -491,6 +524,10 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Tuner gain set to %f dB.\n", gain/10.0);
 	}
 
+	rtlsdr_set_bias_tee(dev, enable_biastee);
+	if (enable_biastee)
+		fprintf(stderr, "activated bias-T on GPIO PIN 0\n");
+
 	/* Reset endpoint before we start reading from it (mandatory) */
 	r = rtlsdr_reset_buffer(dev);
 	if (r < 0)
@@ -502,16 +539,42 @@ int main(int argc, char **argv)
 	pthread_cond_init(&cond, NULL);
 	pthread_cond_init(&exit_cond, NULL);
 
-	memset(&local,0,sizeof(local));
-	local.sin_family = AF_INET;
-	local.sin_port = htons(port);
-	local.sin_addr.s_addr = inet_addr(addr);
+	hints.ai_flags  = AI_PASSIVE; /* Server mode. */
+	hints.ai_family = PF_UNSPEC;  /* IPv4 or IPv6. */
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_protocol = IPPROTO_TCP;
 
-	listensocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	r = 1;
-	setsockopt(listensocket, SOL_SOCKET, SO_REUSEADDR, (char *)&r, sizeof(int));
-	setsockopt(listensocket, SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
-	bind(listensocket,(struct sockaddr *)&local,sizeof(local));
+	if ((aiErr = getaddrinfo(addr,
+				 port,
+				 &hints,
+				 &aiHead )) != 0)
+	{
+		fprintf(stderr, "local address %s ERROR - %s.\n",
+		        addr, gai_strerror(aiErr));
+		return(-1);
+	}
+	memcpy(&local, aiHead->ai_addr, aiHead->ai_addrlen);
+
+	for (ai = aiHead; ai != NULL; ai = ai->ai_next) {
+		aiErr = getnameinfo((struct sockaddr *)ai->ai_addr, ai->ai_addrlen,
+				    hostinfo, NI_MAXHOST,
+				    portinfo, NI_MAXSERV, NI_NUMERICSERV | NI_NUMERICHOST);
+		if (aiErr)
+			fprintf( stderr, "getnameinfo ERROR - %s.\n",hostinfo);
+
+		listensocket = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (listensocket < 0)
+			continue;
+
+		r = 1;
+		setsockopt(listensocket, SOL_SOCKET, SO_REUSEADDR, (char *)&r, sizeof(int));
+		setsockopt(listensocket, SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
+
+		if (bind(listensocket, (struct sockaddr *)&local, aiHead->ai_addrlen))
+			fprintf(stderr, "rtl_tcp bind error: %s", strerror(errno));
+		else
+			break;
+	}
 
 #ifdef _WIN32
 	ioctlsocket(listensocket, FIONBIO, &blockmode);
@@ -522,11 +585,11 @@ int main(int argc, char **argv)
 
 	while(1) {
 		printf("listening...\n");
-		printf("Use the device argument 'rtl_tcp=%s:%d' in OsmoSDR "
+		printf("Use the device argument 'rtl_tcp=%s:%s' in OsmoSDR "
 		       "(gr-osmosdr) source\n"
 		       "to receive samples in GRC and control "
 		       "rtl_tcp parameters (frequency, gain, ...).\n",
-		       addr, port);
+		       hostinfo, portinfo);
 		listen(listensocket,1);
 
 		while(1) {
@@ -546,7 +609,10 @@ int main(int argc, char **argv)
 
 		setsockopt(s, SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
 
-		printf("client accepted!\n");
+		getnameinfo((struct sockaddr *)&remote, rlen,
+			    remhostinfo, NI_MAXHOST,
+			    remportinfo, NI_MAXSERV, NI_NUMERICSERV);
+		printf("client accepted! %s %s\n", remhostinfo, remportinfo);
 
 		memset(&dongle_info, 0, sizeof(dongle_info));
 		memcpy(&dongle_info.magic, "RTL0", 4);

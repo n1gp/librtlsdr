@@ -1,45 +1,48 @@
-# Copyright 2012 OSMOCOM Project
+# Copyright 2012-2020 Osmocom Project
 #
 # This file is part of rtl-sdr
 #
-# GNU Radio is free software; you can redistribute it and/or modify
+# This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3, or (at your option)
-# any later version.
+# the Free Software Foundation, either version 2 of the License, or
+# (at your option) any later version.
 #
-# GNU Radio is distributed in the hope that it will be useful,
+# This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with GNU Radio; see the file COPYING.  If not, write to
-# the Free Software Foundation, Inc., 51 Franklin Street,
-# Boston, MA 02110-1301, USA.
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
 ########################################################################
 # Project setup
 ########################################################################
-cmake_minimum_required(VERSION 2.6)
-project(rtlsdr C)
+cmake_minimum_required(VERSION 3.7.2)
+
+# workaround for https://gitlab.kitware.com/cmake/cmake/issues/16967
+if(${CMAKE_VERSION} VERSION_LESS "3.12.0")
+    project(rtlsdr)
+else()
+    project(rtlsdr C)
+endif()
 
 #select the release build type by default to get optimization flags
 if(NOT CMAKE_BUILD_TYPE)
    set(CMAKE_BUILD_TYPE "Release")
    message(STATUS "Build type not specified: defaulting to release.")
 endif(NOT CMAKE_BUILD_TYPE)
-set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
+list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules)
 
-if(NOT LIB_INSTALL_DIR)
-   set(LIB_INSTALL_DIR lib)
-endif()
+include(GNUInstallDirs)
+include(GenerateExportHeader)
+include(CMakePackageConfigHelpers)
 
 # Set the version information here
 set(VERSION_INFO_MAJOR_VERSION 0) # increment major on api compatibility changes
-set(VERSION_INFO_MINOR_VERSION 5) # increment minor on feature-level changes
+set(VERSION_INFO_MINOR_VERSION 6) # increment minor on feature-level changes
 set(VERSION_INFO_PATCH_VERSION git) # increment patch for bug fixes and docs
 include(Version) # setup version info
 
@@ -55,47 +58,45 @@ if(CMAKE_COMPILER_IS_GNUCC AND NOT WIN32)
     ADD_DEFINITIONS(-Wdeclaration-after-statement)
     #http://gcc.gnu.org/wiki/Visibility
     add_definitions(-fvisibility=hidden;-fcommon)
+elseif(MSVC14 OR MSVC14)
+#pthread-w32 issue, timespec is now part of time.h
+    ADD_DEFINITIONS(-D_TIMESPEC_DEFINED)
 endif()
 
 ########################################################################
 # Find build dependencies
 ########################################################################
-find_package(PkgConfig)
-find_package(LibUSB)
-set(THREADS_USE_PTHREADS_WIN32 true)
 find_package(Threads)
-find_package(FFTW3)
+find_package(PkgConfig)
 
-if(NOT LIBUSB_FOUND)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(LIBUSB libusb-1.0 IMPORTED_TARGET)
+    pkg_search_module(FFTW REQUIRED fftw3 IMPORTED_TARGET)
+else()
+    set(LIBUSB_LIBRARIES "" CACHE STRING "manual libusb path")
+    set(LIBUSB_INCLUDE_DIRS "" CACHE STRING "manual libusb includepath")
+endif()
+
+if(MSVC)
+    set(THREADS_PTHREADS_LIBRARY "" CACHE STRING "manual pthread-win32 path")
+    set(THREADS_PTHREADS_INCLUDE_DIR "" CACHE STRING "manual pthread-win32 includepath")
+else()
+    set(THREADS_PTHREADS_LIBRARY "" CACHE INTERNAL "manual pthread-win32 path")
+    set(THREADS_PTHREADS_INCLUDE_DIR "" CACHE INTERNAL "manual pthread-win32 includepath")
+endif()
+
+if(PKG_CONFIG_FOUND AND NOT LIBUSB_FOUND)
     message(FATAL_ERROR "LibUSB 1.0 required to compile rtl-sdr")
 endif()
 if(NOT THREADS_FOUND)
     message(FATAL_ERROR "pthreads(-win32) required to compile rtl-sdr")
 endif()
-if(NOT FFTW3_FOUND)
-    message(FATAL_ERROR "fftw3 (-win32) required to compile rtl-sdr")
-endif()
-########################################################################
-# Setup the include and linker paths
-########################################################################
-include_directories(
-    ${CMAKE_SOURCE_DIR}/include
-    ${LIBUSB_INCLUDE_DIR}
-    ${THREADS_PTHREADS_INCLUDE_DIR}
-)
-
-#link_directories(
-#    ...
-#)
-
-# Set component parameters
-#set(INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include CACHE INTERNAL "" FORCE)
 
 ########################################################################
 # Create uninstall target
 ########################################################################
 configure_file(
-    ${CMAKE_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in
+    ${PROJECT_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake
 @ONLY)
 
@@ -125,16 +126,32 @@ else (DETACH_KERNEL_DRIVER)
     message (STATUS "Building with kernel driver detaching disabled, use -DDETACH_KERNEL_DRIVER=ON to enable")
 endif (DETACH_KERNEL_DRIVER)
 
+option(ENABLE_ZEROCOPY "Enable usbfs zero-copy support" OFF)
+if (ENABLE_ZEROCOPY)
+    message (STATUS "Building with usbfs zero-copy support enabled")
+    add_definitions(-DENABLE_ZEROCOPY=1)
+else (ENABLE_ZEROCOPY)
+    message (STATUS "Building with usbfs zero-copy support disabled, use -DENABLE_ZEROCOPY=ON to enable")
+endif (ENABLE_ZEROCOPY)
+
+########################################################################
+# Install public header files
+########################################################################
+install(FILES
+    include/rtl-sdr.h
+    include/rtl-sdr_export.h
+    DESTINATION include
+)
+
 ########################################################################
 # Add subdirectories
 ########################################################################
-add_subdirectory(include)
 add_subdirectory(src)
 
 ########################################################################
 # Create Pkg Config File
 ########################################################################
-FOREACH(inc ${LIBUSB_INCLUDE_DIR})
+FOREACH(inc ${LIBUSB_INCLUDEDIR})
     LIST(APPEND RTLSDR_PC_CFLAGS "-I${inc}")
 ENDFOREACH(inc)
 
@@ -152,10 +169,10 @@ IF(CMAKE_CROSSCOMPILING)
     UNSET(RTLSDR_PC_LIBS)
 ENDIF(CMAKE_CROSSCOMPILING)
 
-set(prefix ${CMAKE_INSTALL_PREFIX})
+set(prefix "${CMAKE_INSTALL_PREFIX}")
 set(exec_prefix \${prefix})
-set(libdir \${exec_prefix}/${LIB_INSTALL_DIR})
 set(includedir \${prefix}/include)
+set(libdir \${exec_prefix}/lib)
 
 CONFIGURE_FILE(
     ${CMAKE_CURRENT_SOURCE_DIR}/librtlsdr.pc.in
@@ -164,8 +181,36 @@ CONFIGURE_FILE(
 
 INSTALL(
     FILES ${CMAKE_CURRENT_BINARY_DIR}/librtlsdr.pc
-    DESTINATION ${LIB_INSTALL_DIR}/pkgconfig
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
 )
+
+########################################################################
+# Create CMake Config File
+########################################################################
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/rtlsdr/rtlsdrConfigVersion.cmake"
+  VERSION ${VERSION}
+  COMPATIBILITY AnyNewerVersion
+  )
+
+configure_file(cmake/rtlsdrConfig.cmake
+  "${CMAKE_CURRENT_BINARY_DIR}/rtlsdr/rtlsdrConfig.cmake"
+  COPYONLY
+  )
+
+set(ConfigPackageLocation lib/cmake/rtlsdr)
+install(EXPORT RTLSDR-export
+  FILE rtlsdrTargets.cmake
+  NAMESPACE rtlsdr::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rtlsdr/
+  )
+install(
+  FILES
+  cmake/rtlsdrConfig.cmake
+  "${CMAKE_CURRENT_BINARY_DIR}/rtlsdr/rtlsdrConfigVersion.cmake"
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/rtlsdr/
+  COMPONENT Devel
+  )
 
 ########################################################################
 # Print Summary

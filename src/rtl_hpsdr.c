@@ -1796,7 +1796,7 @@ usage (char *progname)
 	   "\nUsage:\n" "\tPer rcvr options (comma separated i.e. 1,0,1,1):\n"
 	   "\t[-a internal agc of the rtl2832 0|1 (defaults 0 or off)]\n"
 	   "\t[-b turn on bias_t (if supported by dongle) 0|1 (defaults 0 or off)]\n"
-	   "\t[-d direct sampling mode 0|1|2|3 (defaults 0 or off, 1=I 2=Q 3=NOMOD)]\n"
+	   "\t[-d direct sampling mode 0|1|2|3 (defaults 0 or auto, 1=I 2=Q 3=NOMOD)]\n"
 	   "\t[-f freq offset in hz (defaults 0)]\n"
 	   "\t[-g gain in tenths of a db (defaults 0 for auto)]\n"
 	   "\t[-o rcvr order (defaults to 1 - number detected)]\n"
