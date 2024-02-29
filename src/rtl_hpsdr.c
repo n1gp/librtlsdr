@@ -624,7 +624,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
 	    mcb.rcb[rcb->rcvr_num].curr_freq = mcb.rcb[rcb->rcvr_num].new_freq;
 	    mcb.rcb[rcb->rcvr_num].new_freq = 0;
 
-#if 1
+#if 0
             rxnum = rcb->rcvr_num;
             printf
               ("INFO: Rx[%d]: if_bw: %dHz, offset: %dHz, center: %dHz [%8dHz], gain: %0.2f dB, gain_mode: %s, agc: %s, bias_t: %s, direct: %s\n",
@@ -788,51 +788,50 @@ hpsdrsim_thread (void *arg)
 			    hpsdrsim_stop_threads ();
 			    exit (-1);
 			 }
-			 else if (num_rcvrs > 1) {
-			    if (num_rcvrs <= mcb.total_num_rcvrs) {
-			       num_copy_rcvrs = 0;
-			       mcb.active_num_rcvrs = num_rcvrs;
-			    }
-			    else {
-			       num_copy_rcvrs =
-				  num_rcvrs - mcb.total_num_rcvrs;
-			       mcb.active_num_rcvrs = mcb.total_num_rcvrs;
-			    }
 
-			    mcb.nsamps_packet =
-			       nsamps_packet[mcb.active_num_rcvrs - 1];
-			    mcb.frame_offset1 =
-			       frame_offset1[mcb.active_num_rcvrs - 1];
-			    mcb.frame_offset2 =
-			       frame_offset2[mcb.active_num_rcvrs - 1];
-			    mcb.rcvrs_mask = 1;
+			 if (num_rcvrs <= mcb.total_num_rcvrs) {
+			    num_copy_rcvrs = 0;
+			    mcb.active_num_rcvrs = num_rcvrs;
+			 }
+			 else {
+			    num_copy_rcvrs =
+			    num_rcvrs - mcb.total_num_rcvrs;
+			    mcb.active_num_rcvrs = mcb.total_num_rcvrs;
+			 }
 
-			    // disable all previous rcvrs except rcvr 1
-			    for (i = 1; i < mcb.total_num_rcvrs; i++) {
-			       mcb.rcb[i].rcvr_mask = 0;
-			    }
+			 mcb.nsamps_packet =
+			    nsamps_packet[mcb.active_num_rcvrs - 1];
+			 mcb.frame_offset1 =
+			    frame_offset1[mcb.active_num_rcvrs - 1];
+			 mcb.frame_offset2 =
+			    frame_offset2[mcb.active_num_rcvrs - 1];
+			 mcb.rcvrs_mask = 1;
 
-			    // now enable any new ones
-			    for (i = 1; i < mcb.active_num_rcvrs; i++) {
-			       mcb.rcvrs_mask |= 1 << i;
-			       mcb.rcb[i].rcvr_mask = 1 << i;
-			       mcb.rcb[i].output_rate = 0;
-			    }
-			    cal_rcvr_mask = mcb.rcvrs_mask;
+			 // disable all previous rcvrs except rcvr 1
+			 for (i = 1; i < mcb.total_num_rcvrs; i++) {
+			    mcb.rcb[i].rcvr_mask = 0;
+			 }
 
-			    printf
-			       ("Requested %d Activated %d actual rcvr(s)\n",
+			 // now enable any new ones
+			 for (i = 1; i < mcb.active_num_rcvrs; i++) {
+			    mcb.rcvrs_mask |= 1 << i;
+			    mcb.rcb[i].rcvr_mask = 1 << i;
+			    mcb.rcb[i].output_rate = 0;
+			 }
+			 cal_rcvr_mask = mcb.rcvrs_mask;
+
+			 printf
+			    ("Requested %d Activated %d actual rcvr(s)\n",
 				num_rcvrs, mcb.active_num_rcvrs);
 
-			    if (num_copy_rcvrs > 0) {
-			       for (i = mcb.active_num_rcvrs; i < num_rcvrs;
+			 if (num_copy_rcvrs > 0) {
+			    for (i = mcb.active_num_rcvrs; i < num_rcvrs;
 				    i++) {
 				  copy_rcvr[i] = i;
 			       }
 
-			       printf ("Activated %d COPY(S) of rcvr %d\n",
-				       num_copy_rcvrs, mcb.active_num_rcvrs);
-			    }
+			    printf ("Activated %d COPY(S) of rcvr %d\n",
+				  num_copy_rcvrs, mcb.active_num_rcvrs);
 			 }
 		      }
 		      common_freq = (buffer[15 + xtra] & 0x80) ? 1 : 0;
@@ -1026,7 +1025,7 @@ update_dongle ()
 
 	sprintf (num, "%d", mcb.gain[i]);
 
-#if 1
+#if 0
 	//	gain = mcb.gain[i];
 
 	printf
@@ -2004,7 +2003,7 @@ main (int argc, char *argv[])
    mcb.sound_dev[0] = 0;
    conf_file[0] = 0;
    mcb.output_rate = 48000;
-   strcpy (mcb.ip_addr, "192.168.1.1");
+   //strcpy (mcb.ip_addr, "192.168.1.1");
    mcb.serialstr[0] = 0;
    mcb.signal_multiplier = 50;
    mcb.cal_state = CAL_STATE_0;
@@ -2134,6 +2133,36 @@ main (int argc, char *argv[])
    else {
       printf ("No RTL devices found, exiting.\n");
       exit (0);
+   }
+
+   struct ifaddrs *addrs,*ifa;
+   struct sockaddr_in *sa;
+   char *addr;
+   int num_found = 0;
+
+   // if no ip address configured, print out a list of interfaces available
+   // and if only one available then use it
+   if (0 == mcb.ip_addr[0]) {
+      getifaddrs(&addrs);
+      ifa = addrs;
+      while (ifa) {
+        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET) {
+            if((ifa->ifa_flags&IFF_UP)==IFF_UP
+                && (ifa->ifa_flags&IFF_RUNNING)==IFF_RUNNING
+                && (ifa->ifa_flags&IFF_LOOPBACK)!=IFF_LOOPBACK) {
+		sa = (struct sockaddr_in *) ifa->ifa_addr;
+                addr = inet_ntoa(sa->sin_addr);
+                num_found++;
+                printf("Discovered Network Interface: %s Address: %s\n", ifa->ifa_name, addr);
+            }
+        }
+        ifa = ifa->ifa_next;
+      }
+      freeifaddrs(addrs);
+      if (num_found == 1) {
+        printf("\nUsing IP Address: %s\n", addr);
+        strcpy(mcb.ip_addr, addr);
+      }
    }
 
    printf ("RTL base sample rate: %d hz\n\n", RTL_SAMPLE_RATE);
