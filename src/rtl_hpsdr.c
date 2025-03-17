@@ -458,25 +458,23 @@ update_dongle ()
 
         rtldev = mcb.rcb[i].rtldev;
 
-        if(mcb.gain[i])
-        {
-            r = rtlsdr_set_tuner_gain_mode(rtldev, 1);
-            r |= rtlsdr_set_tuner_gain(rtldev, mcb.gain[i]);
-            if (r < 0)
-            {
-                t_print ("WARNING: Failed to set tuner manual gain!\n");
-                return (-1);
-            }
-        }
-        else
-        {
-            r = rtlsdr_set_tuner_gain_mode(rtldev, 0);
-            if (r < 0)
-            {
-                t_print ("WARNING: Failed to set tuner gain!\n");
-                return (-1);
-            }
-        }
+	if (mcb.gain_mode[i] > 0 ) {
+	  // Enable Auto Gain Mode
+	  r = verbose_auto_gain (rtldev);
+	  if (r < 0) {
+	    printf ("WARNING: Failed to set tuner gain!\n");
+	    return (-1);
+	  }
+	}
+	else {
+	  // Set Manual Gain Mode and Gain setting value
+	  r = verbose_gain_set (rtldev, mcb.gain[i]);
+	  if (r < 0) {
+	    printf ("WARNING: Failed to set tuner manual gain!\n");
+	    return (-1);
+	  }
+	}
+
         // First read current center freq as it may have changed manually
         // independently from change in config file.
         mcb.last_center_freq[i] = rtlsdr_get_center_freq (rtldev);
@@ -1054,16 +1052,20 @@ init_rtl (int rcvr_num, int dev_index)
 
     sprintf (num, "%d", mcb.gain[rcvr_num]);
 
-    if(mcb.gain[rcvr_num])
-    {
-        r = rtlsdr_set_tuner_gain_mode(rtldev, 1);
-        r |= rtlsdr_set_tuner_gain(rtldev, mcb.gain[rcvr_num]);
-        t_print ("  tuner gain\t\t%0.2f dB\n", mcb.gain[rcvr_num]/10.0);
-    }
-    else
-    {
-        r = rtlsdr_set_tuner_gain_mode(rtldev, 0);
-        t_print ("  tuner gain\t\tauto\n");
+    if (mcb.gain_mode[rcvr_num] > 0) {
+      // Enable Auto Gain Mode
+      r = verbose_auto_gain (rtldev);
+      if (r < 0) {
+          printf ("WARNING: Failed to set tuner gain to auto!\n");
+          return (-1);
+      } else printf ("  tuner gain\t\tauto\n");
+    } else {
+        // Set Manual Gain Mode and Gain setting value
+        r = verbose_gain_set (rtldev, mcb.gain[rcvr_num]);
+        if (r < 0) {
+            printf ("WARNING: Failed to set tuner manual gain!\n");
+            return (-1);
+        } else printf ("  tuner gain\t\t%0.2f dB\n", mcb.gain[rcvr_num]/10.0);
     }
 
     rtlsdr_set_center_freq (rtldev, 100000000);
