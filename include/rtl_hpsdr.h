@@ -1,5 +1,7 @@
+#ifndef _RTL_HPSDR_H
+#define _RTL_HPSDR_H
+
 /* Copyright (C)
-* 2019 - Christoph van Wüllen, DL1YCF
 *
 * 2025 - Rick Koch, N1GP
 *   Rewrote rtl_hpsdr using Christoph's hpsdrsim code as a guide
@@ -27,8 +29,42 @@
 // other modules include is with "EXTERN=extern".
 //
 
-#include <sys/timeb.h>
+#include <stdlib.h>
+
+#ifndef _WIN32
+#include <stdio.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/ioctl.h>
+#include <netinet/in.h>
+#include <net/if_arp.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <ifaddrs.h>
+#else
+#include <winsock2.h>
+#include <windows.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#endif
+
 #include <fftw3.h>
+#include <sys/timeb.h>
+#include <sys/timeb.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <semaphore.h>
+#include <signal.h>
+#include <math.h>
+#include <limits.h>
+#include <string.h>
+#include <libgen.h>
+#include <errno.h>
 #include <rtl-sdr.h>
 
 #ifdef INCLUDE_NEON
@@ -37,7 +73,7 @@
 #include <xmmintrin.h>
 #endif
 
-#define PRG_VERSION "1.8" // see ChangeLog for history
+#define PRG_VERSION "2.0" // see ChangeLog for history
 
 #define HERMES_FW_VER 32
 #define PORT 1024
@@ -152,24 +188,18 @@ void format_payload(void);
 int init_rtl(int rcvr_num, int dev_index);
 void load_packet(struct rcvr_cb* rcb);
 void rtl_sighandler(int signum);
-int get_addr(int sock);
-void hpsdrsim_reveal(void);
 int parse_config(char* conf_file);
 
-pthread_t hpsdrsim_thread_id;
-void* hpsdrsim_thread(void* arg);
-pthread_t watchdog_thread_id;
-void* hpsdrsim_watchdog_thread(void* arg);
-pthread_t discovery_thread_id;
-void* hpsdrsim_discovery_thread(void* arg);
 void* hpsdrsim_sendiq_thr_func(void* arg);
 void* rtl_read_thr_func(void* arg);
 void hpsdrsim_stop_threads();
 
+#ifndef _WIN32
 void open_local_sound(char* adevice);
 void close_local_sound();
 void write_local_sound(unsigned char* samples);
 void reopen_local_sound();
+#endif
 
 #define ODEV_NONE          999
 #define ODEV_METIS           0
@@ -196,3 +226,5 @@ extern int clock_nanosleep(clockid_t __clock_id, int __flags,
 #include <stdarg.h>
 void t_print(const char *format, ...);
 void t_perror(const char *string);
+
+#endif // _RTL_HPSDR_H

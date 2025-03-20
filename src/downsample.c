@@ -19,6 +19,9 @@
 
 #include "rtl_hpsdr.h"
 
+//#undef INCLUDE_NEON
+//#undef INCLUDE_SSE2
+
 #ifdef INCLUDE_NEON
 #define vector_type float32x4_t
 #define vector_zero vmovq_n_f32(0)

@@ -14,6 +14,16 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#ifndef __CONVENIENCE_H
+#define __CONVENIENCE_H
+
+#include <stdint.h>
+#include <stdio.h>
+#include <time.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* a collection of user friendly tools */
 
@@ -139,4 +149,17 @@ int verbose_reset_buffer(rtlsdr_dev_t *dev);
  */
 
 int verbose_device_search(char *s);
+
+time_t utctimestr_to_time(const char * str, double * fraction);
+time_t localtimestr_to_time(const char * str, double * fraction);
+
+
+void executeInBackground( char * file, char * args, char * searchStr[], char * replaceStr[] );
+
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /*__CONVENIENCE_H*/
 

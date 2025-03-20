@@ -23,14 +23,29 @@
 /*
  * This program simulates an HPSDR Hermes board.
  */
-#include <stdio.h>
-#include <errno.h>
+
+#include "rtl_hpsdr.h"
+#include "rtl-sdr.h"
+#include "convenience/convenience.h"
+#include "version.h"
+#include <sched.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <stdlib.h>
+#include <errno.h>
+
+#ifdef _WIN32
+#include "getopt/getopt.h"
+#include <stdlib.h>
+#pragma comment(lib, "IPHLPAPI.lib")
+#pragma comment(lib, "ws2_32.lib")
+typedef int socklen_t;
+#else
+#include <stdio.h>
 #include <stdbool.h>
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
@@ -42,15 +57,11 @@
 #include <sys/timeb.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <net/if.h>
-
-#define EXTERN
-#include "rtl_hpsdr.h"
-#include "rtl-sdr.h"
+#endif
 
 /*
  * These variables store the state of the "old protocol" SDR.
@@ -101,8 +112,6 @@ static int cal_count[MAX_RCVRS] = { 0 };
 static int last_freq[MAX_RCVRS] = { 0 };
 static float dcIlast[MAX_RCVRS] = { 0.0f }, dcQlast[MAX_RCVRS] = { 0.0f };
 
-static int common_freq = 0;
-
 static int reveal_socket;
 
 static int nsamps_packet[8] = { 126, 72, 50, 38, 30, 26, 22, 20 };
@@ -142,7 +151,10 @@ rtl_sighandler (int signum)
         running = 0;
     else
         mcb.calibrate = 0;
-    //hpsdrsim_stop_threads (); //Segmentation fault?
+    //hpsdrsim_stop_threads ();
+#ifdef _WIN32
+   exit (0);			// RRK FIXME
+#endif
 }
 
 // returns the current time.
@@ -158,10 +170,66 @@ time_stamp ()
     return timestamp;
 }
 
+void *__memalign(size_t align, size_t len)
+{
+	unsigned char *mem, *new, *end;
+	size_t header, footer;
+
+	if ((align & -align) != align) {
+		errno = EINVAL;
+		return NULL;
+	}
+
+	if (len > SIZE_MAX - align) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	if (align <= 4*sizeof(size_t)) {
+		if (!(mem = malloc(len)))
+			return NULL;
+		return mem;
+	}
+
+	if (!(mem = malloc(len + align-1)))
+		return NULL;
+
+	new = (void *)((uintptr_t)mem + align-1 & -align);
+	if (new == mem) return mem;
+
+	header = ((size_t *)mem)[-1];
+
+	if (!(header & 7)) {
+		((size_t *)new)[-2] = ((size_t *)mem)[-2] + (new-mem);
+		((size_t *)new)[-1] = ((size_t *)mem)[-1] - (new-mem);
+		return new;
+	}
+
+	end = mem + (header & -8);
+	footer = ((size_t *)end)[-2];
+
+	((size_t *)mem)[-1] = header&7 | new-mem;
+	((size_t *)new)[-2] = footer&7 | new-mem;
+	((size_t *)new)[-1] = header&7 | end-new;
+	((size_t *)end)[-2] = footer&7 | end-new;
+
+	free(mem);
+	return new;
+}
+
+int my_posix_memalign(void **res, size_t align, size_t len)
+{
+	if (align < sizeof(void *)) return EINVAL;
+	void *mem = __memalign(align, len);
+	if (!mem) return errno;
+	*res = mem;
+	return 0;
+}
+
 int
 float_malloc_align (void **voidptr, int alignment, int bytes)
 {
-    return (posix_memalign (voidptr, alignment, bytes));
+   return (my_posix_memalign (voidptr, alignment, bytes));
 }
 
 void
@@ -336,7 +404,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
         // Set new frequency if one is pending and enough time has expired
         if (!using_IQfiles)
         {
-            if ((mcb.rcb[rcb->rcvr_num].new_freq) && (mcb.rcb[rcb->rcvr_num].new_freq != 10000000))
+            if ((mcb.rcb[rcb->rcvr_num].new_freq) && (mcb.rcb[rcb->rcvr_num].new_freq != 11000000))
             {
                 ftime (&mcb.freq_ttime[rcb->rcvr_num]);
                 if ((((((mcb.freq_ttime[rcb->rcvr_num].time * 1000) +
@@ -388,7 +456,7 @@ hpsdrsim_stop_threads ()
     int i;
 
     running = 0;
-
+#if 0   //Segmentation fault?
     for (i = 0; i < mcb.total_num_rcvrs; i++)
     {
         rtlsdr_cancel_async (mcb.rcb[i].rtldev);
@@ -397,7 +465,6 @@ hpsdrsim_stop_threads ()
     }
 
     // unblock held mutexes so we can exit
-#if 0
     pthread_mutex_lock (&do_cal_lock);
     mcb.cal_state = CAL_STATE_EXIT;
     pthread_cond_broadcast (&do_cal_cond);
@@ -678,10 +745,10 @@ do_cal_thr_func (void *arg)
         {
             rtlsdr_set_center_freq (rcb->rtldev,
                                     rcb->curr_freq + mcb.up_xtal + i);
-            //t_print
-            //  ("INFO: [%s] cal update, rcvr %d old offset %+5d new offset %+5d new freq %d\n",
-            //  time_stamp (), rcb->rcvr_num + 1, mcb.freq_offset[rcb->rcvr_num],
-            //  i, rcb->curr_freq + i);
+            t_print
+              ("INFO: [%s] cal update, rcvr %d old offset %+5d new offset %+5d new freq %d\n",
+              time_stamp (), rcb->rcvr_num + 1, mcb.freq_offset[rcb->rcvr_num],
+              i, rcb->curr_freq + i);
 
             if (2 == flip[rcb->rcvr_num])
             {
@@ -803,7 +870,7 @@ rtlsdr_callback (unsigned char *buf, uint32_t len, void *ctx)
             {
                 cal_rcvr_mask = mcb.rcvrs_mask;
                 // gradually increase cal time to a max of 30 minutes
-                do_cal_time = (do_cal_time >= 1800) ? 1800 : do_cal_time + 1;
+                do_cal_time = (do_cal_time >= 1800) ? 1800 : do_cal_time + 180;
             }
         }
     }
@@ -849,10 +916,10 @@ format_payload (void)
     for (i = 0; i < 8; i++)
         payload[i] = hpsdr_header[i];
 
-    for (i = 8; i < 15; i++)
+    for (i = 8; i < 16; i++) //RRK
         payload[i] = proto_header[i - 8];
 
-    for (i = 520; i < 527; i++)
+    for (i = 520; i < 528; i++)
         payload[i] = proto_header[i - 520];
 }
 
@@ -1024,7 +1091,7 @@ init_rtl (int rcvr_num, int dev_index)
         r = rtlsdr_set_tuner_bandwidth (rtldev, RTL_BANDWIDTH);
         if (r < 0)
         {
-            t_print ("WARNING: Failed to set IF BW to %d Hz!\n",RTL_BANDWIDTH);
+            t_print ("WARNING: Failed to set IF BW to %d Hz!\n", RTL_BANDWIDTH);
             return (-1);
         }
 
@@ -1068,9 +1135,9 @@ init_rtl (int rcvr_num, int dev_index)
         } else printf ("  tuner gain\t\t%0.2f dB\n", mcb.gain[rcvr_num]/10.0);
     }
 
-    rtlsdr_set_center_freq (rtldev, 100000000);
+    rtlsdr_set_center_freq (rtldev, 110000000 + mcb.up_xtal);
     if (r < 0)
-        t_print ("WARNING: Failed to set tuner freq to 100000000hz!\n");
+        t_print ("WARNING: Failed to set tuner freq!\n");
 
     r = rtlsdr_set_direct_sampling (rtldev, mcb.direct_mode[rcvr_num]);
 
@@ -1311,10 +1378,6 @@ parse_config (char *conf_file)
             {
                 mcb.calibrate = atoi (value);
             }
-            else if (!strcmp ("ip_addr", option))
-            {
-                strcpy (mcb.ip_addr, value);
-            }
             else if (!strcmp ("rtl_mode", option))
             {
                 mcb.rtl_mode = atoi (value);
@@ -1346,7 +1409,7 @@ int new_protocol_running()
 
 int main (int argc, char *argv[])
 {
-    int i, j, r, size;
+    int j, r, size;
     int opt, count = 0;
     pthread_t thread;
     uint8_t id[4] = { 0xef, 0xfe, 1, 6 };
@@ -1358,7 +1421,7 @@ int main (int argc, char *argv[])
     int num_rcvrs, yes = 1;
     uint8_t *bp;
     unsigned long checksum = 0;
-    uint32_t last_seqnum = 0xffffffff, seqnum;  // sequence number of received packet
+    uint32_t i, last_seqnum = 0xffffffff, seqnum;  // sequence number of received packet
     int udp_retries = 0;
     int bytes_read, bytes_left;
     uint32_t code;
@@ -1379,14 +1442,20 @@ int main (int argc, char *argv[])
     char serialstr[MAXSTR];
     char *progname = basename (argv[0]);
     char vendor[256] = { 0 }, product[256] = { 0 }, serial[256] = { 0 };
-    struct sigaction sigact;
+#ifdef _WIN32
+   WSADATA wsd;
+
+   i = WSAStartup (MAKEWORD (2, 2), &wsd);
+#else
+   struct sigaction sigact;
+#endif
 
     // set defaults
     mcb.sound_dev[0] = 0;
     conf_file[0] = 0;
     mcb.output_rate = 48000;
     mcb.serialstr[0] = 0;
-    mcb.signal_multiplier = 1;
+    mcb.signal_multiplier = 5;
     mcb.cal_state = CAL_STATE_0;
     mcb.calibrate = 0;
     mcb.up_xtal = 0;
@@ -1405,6 +1474,7 @@ int main (int argc, char *argv[])
         mcb.direct_mode[i] = 0;
         mcb.last_direct_mode[i] = 0;
         mcb.gain[i] = 0;
+        mcb.gain_mode[i] = 1;
         mcb.last_gain[i] = 0;
         mcb.freq_offset[i] = 0;
         mcb.last_freq_offset[i] = 0;
@@ -1486,7 +1556,7 @@ int main (int argc, char *argv[])
         case 'v':
             t_print ("\nGNU %s Version %s Date Built %s %s\n", progname,
                     PRG_VERSION, __TIME__, __DATE__);
-            //t_print ("GIT Hash %s\n", GITVERSION);
+            t_print ("GIT Hash %s\n", GITVERSION);
             t_print ("Copyright (C) 2014 Free Software Foundation, Inc.\n"
                     "License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\n"
                     "This is free software: you are free to change and redistribute it.\n"
@@ -1544,6 +1614,7 @@ int main (int argc, char *argv[])
         t_print("Using IQ files, no RTL hardware will be used\n");
     }
 
+#ifndef _WIN32
     sigact.sa_handler = rtl_sighandler;
     sigemptyset (&sigact.sa_mask);
     sigact.sa_flags = 0;
@@ -1551,16 +1622,19 @@ int main (int argc, char *argv[])
     sigaction (SIGTERM, &sigact, NULL);
     sigaction (SIGQUIT, &sigact, NULL);
     sigaction (SIGPIPE, &sigact, NULL);
+#else
+    SetConsoleCtrlHandler ((PHANDLER_ROUTINE) rtl_sighandler, TRUE);
+#endif
 
     format_payload ();
 
-    // create a lookup table for float values
+    // create a lookup table for float values for the 4 sample rates
+    // increase amplitude for lower bands due to increased decimation
     for (r = 0; r < 4; r++)
     {
         for (i = 0; i < 256; i++)
         {
-            rtl_lut[r][i] = (float) (i - 127) *
-                            (float) (mcb.signal_multiplier - (r * 10));
+            rtl_lut[r][i] = (float)((i - 127.4f) / 128.0f) * (256/(r+1) * mcb.signal_multiplier);
         }
     }
 
@@ -1573,8 +1647,10 @@ int main (int argc, char *argv[])
     pthread_mutex_init (&do_cal_lock, NULL);
     pthread_cond_init (&do_cal_cond, NULL);
 
+#ifndef _WIN32
     if (mcb.sound_dev[0])
         open_local_sound (mcb.sound_dev);
+#endif
 
     // enable the 1st rcvr until we get the active count
     mcb.rcb[0].rcvr_mask = 1;
@@ -1661,7 +1737,9 @@ int main (int argc, char *argv[])
     }
 
     setsockopt(sock_udp, SOL_SOCKET, SO_REUSEADDR, (void *)&yes, sizeof(yes));
+#ifndef _WIN32
     setsockopt(sock_udp, SOL_SOCKET, SO_REUSEPORT, (void *)&yes, sizeof(yes));
+#endif
     tv.tv_sec = 0;
     tv.tv_usec = 1000;
     setsockopt(sock_udp, SOL_SOCKET, SO_RCVTIMEO, (void *)&tv, sizeof(tv));
@@ -1695,7 +1773,8 @@ int main (int argc, char *argv[])
         if (bytes_read < 0 && errno != EAGAIN)
         {
             t_perror("recvfrom");
-            return EXIT_FAILURE;
+            //return EXIT_FAILURE;
+            continue;
         }
 
         // If nothing has arrived via UDP for some time, try to open TCP connection.
@@ -1737,10 +1816,7 @@ int main (int argc, char *argv[])
             }
 
             last_seqnum = seqnum;
-            int last_running = running;
-            running = 0;
             process_ep2();
-            running = last_running;
 
             break;
 
@@ -1799,6 +1875,8 @@ int main (int argc, char *argv[])
             }
             enable_thread = 0;
 
+            while (active_thread) usleep(1000);
+
             break;
 
         case 0x0104feef:
@@ -1820,10 +1898,13 @@ int main (int argc, char *argv[])
             t_print( "START the PC-to-SDR handler thread, code: 0x%08x\n", code);
             enable_thread = 0;
 
-            while (active_thread)
-            {
-                usleep(1000);
-            }
+            // thread is disabled so unblock send
+            pthread_mutex_lock (&send_lock);
+            send_flags = mcb.rcvrs_mask;
+            pthread_cond_broadcast (&send_cond);
+            pthread_mutex_unlock (&send_lock);
+
+            while (active_thread) usleep(1000);
 
             memset(&addr_old, 0, sizeof(addr_old));
             addr_old.sin_family = AF_INET;
@@ -1831,7 +1912,6 @@ int main (int argc, char *argv[])
             addr_old.sin_port = addr_from.sin_port;
             enable_thread = 1;
             active_thread = 1;
-            //running = 1;
 
             if (pthread_create(&thread, NULL, handler_ep6, NULL) < 0)
             {
@@ -1913,6 +1993,12 @@ int main (int argc, char *argv[])
 
     close(sock_udp);
 
+#ifndef _WIN32
+    if (mcb.sound_dev[0])
+       close_local_sound ();
+#else
+    WSACleanup ();
+#endif
     return EXIT_SUCCESS;
 }
 
@@ -1920,7 +2006,7 @@ void process_ep2(int frame)
 {
     int ep, bytes_read = 0;
     int i = 0, j = 0;
-    int rc, offset;
+    int c, offset;
     int freq, num_rcvrs;
     u_char C0_1, C0_2;
 
@@ -1936,176 +2022,159 @@ void process_ep2(int frame)
     // REMEMBER, 2 USB packets of data here (audio, C0, ...)
     C0_1 = buffer[11] & 0xFE;
     C0_2 = buffer[523] & 0xFE;
-    freq = 0;
 
-    if ((C0_1 >= 4)
-            && (C0_1 <= (4 + ((mcb.total_num_rcvrs - 1) * 2))))
-    {
-        offset = 0;
-        freq = 1;
-        j = (C0_1 - 4) / 2;
-    }
-    else if ((C0_2 >= 4)
-             && (C0_2 <=
-                 (4 + ((mcb.total_num_rcvrs - 1) * 2))))
-    {
-        offset = 512;
-        freq = 1;
-        j = (C0_2 - 4) / 2;
-    }
+    for (c = 0; c < 2; c++) {
+        freq = 0;
 
-    if (freq)
-    {
-        freq =
-            (int) buffer[12 + offset] << 24 | (int) buffer[13 +
-                    offset]
-            << 16 | (int) buffer[14 +
-                                 offset] << 8 | (int) buffer[15 +
-                                         offset];
-
-        if (last_freq[j] != freq && 0 != freq)
+        if ((C0_1 >= 4 && c == 0)
+                && (C0_1 <= (4 + ((mcb.total_num_rcvrs - 1) * 2))))
         {
-            if (common_freq)
-            {
-                for (i = 0; i < mcb.active_num_rcvrs; i++)
-                {
-                    mcb.rcb[i].new_freq = freq;
-                }
-            }
-            else if (j < mcb.total_num_rcvrs)
-            {
-                mcb.rcb[j].new_freq = freq;
-            }
-            last_freq[j] = freq;
-            ftime (&mcb.freq_ltime[j]);
+            offset = 0;
+            freq = 1;
+            j = (C0_1 - 4) / 2;
         }
-    }
-
-    if ((C0_1 == 0x00) || (C0_2 == 0x00))
-    {
-        offset = (C0_1 == 0x00) ? 0 : 512;
-
-        if (last_rate != (buffer[12 + offset] & 3))
+        else if ((C0_2 >= 4 && c == 1)
+                 && (C0_2 <= (4 + ((mcb.total_num_rcvrs - 1) * 2))))
         {
-            last_rate = (buffer[12 + offset] & 3);
-
-            switch (last_rate)
-            {
-            case 3:
-                mcb.output_rate = 384000;
-                break;
-
-            case 2:
-                mcb.output_rate = 192000;
-                break;
-
-            case 1:
-                mcb.output_rate = 96000;
-                break;
-
-            case 0:
-                mcb.output_rate = 48000;
-                break;
-
-            default:
-                t_print ("WARNING: UNSUPPORTED RATE: %x!!!\n",
-                        last_rate);
-            }
-
-            t_print ("Setting hpsdr output rate to %d hz\n",
-                    mcb.output_rate);
+            offset = 512;
+            freq = 1;
+            j = (C0_2 - 4) / 2;
         }
 
-        if (last_num_rcvrs != (buffer[15 + offset] & 0x38))
+        if (freq)
         {
-            last_num_rcvrs = (buffer[15 + offset] & 0x38);
-            num_rcvrs = (last_num_rcvrs >> 3) + 1;
+            freq = (int) buffer[12 + offset] << 24 | (int) buffer[13 + offset]
+                << 16 | (int) buffer[14 + offset] << 8 | (int) buffer[15 + offset];
 
-            if (num_rcvrs > MAX_RCVRS)
+            if (last_freq[j] != freq && 0 != freq)
             {
-                t_print ("ERROR: Attempt to exceed max number of rcvrs: %d\n",
-                 MAX_RCVRS);
-                hpsdrsim_stop_threads ();
-                exit (-1);
-            }
-
-            if (num_rcvrs <= mcb.total_num_rcvrs)
-            {
-                num_copy_rcvrs = 0;
-                mcb.active_num_rcvrs = num_rcvrs;
-            }
-            else
-            {
-                num_copy_rcvrs =
-                    num_rcvrs - mcb.total_num_rcvrs;
-                mcb.active_num_rcvrs = mcb.total_num_rcvrs;
-            }
-
-            mcb.nsamps_packet =
-                nsamps_packet[mcb.active_num_rcvrs - 1];
-            mcb.frame_offset1 =
-                frame_offset1[mcb.active_num_rcvrs - 1];
-            mcb.frame_offset2 =
-                frame_offset2[mcb.active_num_rcvrs - 1];
-            mcb.rcvrs_mask = 1;
-
-
-            // disable all previous rcvrs except rcvr 1
-            for (i = 1; i < mcb.total_num_rcvrs; i++)
-            {
-                mcb.rcb[i].rcvr_mask = 0;
-            }
-
-            // now enable any new ones
-            for (i = 1; i < mcb.active_num_rcvrs; i++)
-            {
-                mcb.rcvrs_mask |= 1 << i;
-                mcb.rcb[i].rcvr_mask = 1 << i;
-                mcb.rcb[i].output_rate = 0;
-            }
-            cal_rcvr_mask = mcb.rcvrs_mask;
-
-            t_print ("Requested %d Activated %d actual rcvr(s)\n",
-             num_rcvrs, mcb.active_num_rcvrs);
-
-            if (num_copy_rcvrs > 0)
-            {
-                for (i = mcb.active_num_rcvrs; i < num_rcvrs;
-                        i++)
+                if (j < mcb.total_num_rcvrs)
                 {
-                    copy_rcvr[i] = i;
+                    mcb.rcb[j].new_freq = freq;
+                }
+                last_freq[j] = freq;
+                ftime (&mcb.freq_ltime[j]);
+            }
+        }
+
+        if ((C0_1 == 0x00) || (C0_2 == 0x00))
+        {
+            offset = (C0_1 == 0x00) ? 0 : 512;
+
+            if (last_rate != (buffer[12 + offset] & 3))
+            {
+                last_rate = (buffer[12 + offset] & 3);
+
+                switch (last_rate)
+                {
+                case 3:
+                    mcb.output_rate = 384000;
+                    break;
+
+                case 2:
+                    mcb.output_rate = 192000;
+                    break;
+
+                case 1:
+                    mcb.output_rate = 96000;
+                    break;
+
+                case 0:
+                    mcb.output_rate = 48000;
+                    break;
+
+                default:
+                    t_print ("WARNING: UNSUPPORTED RATE: %x!!!\n",
+                            last_rate);
                 }
 
-                t_print ("Activated %d COPY(S) of rcvr %d\n",
+                t_print ("Setting hpsdr output rate to %d hz\n", mcb.output_rate);
+            }
+
+            if (last_num_rcvrs != (buffer[15 + offset] & 0x38))
+            {
+                last_num_rcvrs = (buffer[15 + offset] & 0x38);
+                num_rcvrs = (last_num_rcvrs >> 3) + 1;
+
+                if (num_rcvrs > MAX_RCVRS)
+                {
+                    t_print ("ERROR: Attempt to exceed max number of rcvrs: %d\n",
+                     MAX_RCVRS);
+                    hpsdrsim_stop_threads ();
+                    exit (-1);
+                }
+
+                if (num_rcvrs <= mcb.total_num_rcvrs)
+                {
+                    num_copy_rcvrs = 0;
+                    mcb.active_num_rcvrs = num_rcvrs;
+                }
+                else
+                {
+                    num_copy_rcvrs =
+                        num_rcvrs - mcb.total_num_rcvrs;
+                    mcb.active_num_rcvrs = mcb.total_num_rcvrs;
+                }
+
+                mcb.nsamps_packet =
+                    nsamps_packet[mcb.active_num_rcvrs - 1];
+                mcb.frame_offset1 =
+                    frame_offset1[mcb.active_num_rcvrs - 1];
+                mcb.frame_offset2 =
+                    frame_offset2[mcb.active_num_rcvrs - 1];
+                mcb.rcvrs_mask = 1;
+
+
+                // disable all previous rcvrs except rcvr 1
+                for (i = 1; i < mcb.total_num_rcvrs; i++)
+                {
+                    mcb.rcb[i].rcvr_mask = 0;
+                }
+
+                // now enable any new ones
+                for (i = 1; i < mcb.active_num_rcvrs; i++)
+                {
+                    mcb.rcvrs_mask |= 1 << i;
+                    mcb.rcb[i].rcvr_mask = 1 << i;
+                    mcb.rcb[i].output_rate = 0;
+                }
+                cal_rcvr_mask = mcb.rcvrs_mask;
+
+                t_print ("Requested %d Activated %d actual rcvr(s)\n",
+                 num_rcvrs, mcb.active_num_rcvrs);
+
+                if (num_copy_rcvrs > 0)
+                {
+                    for (i = mcb.active_num_rcvrs; i < num_rcvrs; i++)
+                    {
+                        copy_rcvr[i] = i;
+                    }
+
+                    t_print ("Activated %d COPY(S) of rcvr %d\n",
                         num_copy_rcvrs, mcb.active_num_rcvrs);
+                }
             }
         }
-        common_freq = (buffer[15] & 0x80) ? 1 : 0;
     }
 
+#ifndef _WIN32
     // handle the audio data if we assigned an audio device
     if (mcb.sound_dev[0])
         write_local_sound (&(buffer[8]));
-
+#endif
 }
 
 void *handler_ep6(void *arg)
 {
     uint32_t counter = 0;
 
-    //t_print("start handler_ep6()\n");
-    while (1)
+    t_print("start handler_ep6()\n");
+    while (enable_thread)
     {
-        running = 0;
-        if (!enable_thread)
-        {
-            break;
-        }
-
         running = 1;
         // wait for all rcvrs to have formatted data ready before sending
         pthread_mutex_lock (&send_lock);
-        while (send_flags != mcb.rcvrs_mask)
+        while (send_flags != mcb.rcvrs_mask && enable_thread)
         {
             pthread_cond_wait (&send_cond, &send_lock);
         }
@@ -2133,7 +2202,6 @@ void *handler_ep6(void *arg)
         ++counter;
 
         pthread_mutex_lock (&done_send_lock);
-
         sendto(sock_udp, payload, HPSDR_FRAME_LEN, 0, (struct sockaddr *)&addr_old, sizeof(addr_old));
         pthread_mutex_unlock (&send_lock);
         send_flags = 0;
@@ -2143,7 +2211,7 @@ void *handler_ep6(void *arg)
 
     active_thread = 0;
     running = 0;
-    //t_print("stop handler_ep6()\n");
+    t_print("stop handler_ep6()\n");
     return NULL;
 }
 
