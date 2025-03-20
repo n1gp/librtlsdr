@@ -31,4 +31,4 @@ Dockerized version of the library for use with cw-skimmer docker container.
 
 # Watch out: blacklist this module:
 dvb_usb_rtl28xxu
-sudo echo blacklist dvb_usb_rtl28xxu > /etc/modprobe.d/blacklist-dvb_usb_rtl28xxu.conf
+sudo install-blacklist.sh
