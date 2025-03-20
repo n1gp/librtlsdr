@@ -12,6 +12,7 @@ rtl_hpsdr -h   (for help)
 
 
 WINDOWS (built on Linux using MingW)
+
 32-bit:  ./cross_build_mingw32.sh output
 
 Binaries are in rtlsdr-bin-w32_output/bin
