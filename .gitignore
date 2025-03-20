@@ -38,5 +38,14 @@ src/rtl_tcp
 CMakeCache.txt
 */CMakeFiles
 CMakeFiles
-*.cmake
 build
+**/*.o
+**/*.so*
+**/*.a
+src/rtl_adsb
+src/rtl_eeprom
+src/rtl_fm
+src/rtl_hpsdr
+src/rtl_power
+src/rtl_test
+
