@@ -135,6 +135,8 @@ struct main_cb {
         int center_freq[MAX_RCVRS + 1];
         int if_bw[MAX_RCVRS + 1];
         int gain_mode[MAX_RCVRS + 1];
+        int rcvr_order[MAX_RCVRS + 1];
+        int use_up[MAX_RCVRS + 1];
 
         // Added to handle dynamic config file updates
         int last_agc_mode[MAX_RCVRS + 1];
@@ -147,7 +149,6 @@ struct main_cb {
         int last_gain_mode[MAX_RCVRS + 1];
 
 
-        int rcvr_order[MAX_RCVRS + 1];
         int signal_multiplier;
         int cal_state;
         int calibrate;
@@ -203,11 +204,11 @@ void reopen_local_sound();
 
 #define ODEV_NONE          999
 #define ODEV_METIS           0
-#define ODEV_HERMES          1
+#define ODEV_ORION           5
 
 #define NDEV_NONE          999
 #define NDEV_ATLAS           0
-#define NDEV_HERMES          1
+#define NDEV_ORION           4
 
 //
 // Forward declarations for new protocol stuff

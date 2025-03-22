@@ -649,8 +649,9 @@ write_local_sound(unsigned char* samples) {
 	{
 		if (in_count++ > alsa_cb.thread_buffer_time)
 			do_once = false;
-			if (in_count > alsa_cb.thread_buffer_time / 2
-				&& in_count < alsa_cb.thread_buffer_time)
+
+		if (in_count > alsa_cb.thread_buffer_time / 2
+			&& in_count < alsa_cb.thread_buffer_time)
 			return 0;
 	}
 

@@ -131,7 +131,7 @@ static u_int network_error = 0;
 static float rtl_lut[4][256];
 static u_char *fft_buf;
 static int reset_cal = 0;
-static int do_cal_time = 5;    //seconds between calibration
+static int do_cal_time = 5;    //seconds between calibration, gradually increases
 static bool using_IQfiles = false, using_IQrewind = false;
 
 static struct sockaddr_in addr_new;
@@ -404,7 +404,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
         // Set new frequency if one is pending and enough time has expired
         if (!using_IQfiles)
         {
-            if ((mcb.rcb[rcb->rcvr_num].new_freq) && (mcb.rcb[rcb->rcvr_num].new_freq != 11000000))
+            if ((mcb.rcb[rcb->rcvr_num].new_freq) && (mcb.rcb[rcb->rcvr_num].new_freq != 110000000))
             {
                 ftime (&mcb.freq_ttime[rcb->rcvr_num]);
                 if ((((((mcb.freq_ttime[rcb->rcvr_num].time * 1000) +
@@ -413,8 +413,8 @@ hpsdrsim_sendiq_thr_func (void *arg)
                         mcb.freq_ltime[rcb->rcvr_num].millitm)) > 200)
                         || hpsdr_sequence < 1000000)
                 {
-                    i = mcb.rcb[rcb->rcvr_num].new_freq + mcb.up_xtal +
-                        mcb.freq_offset[rcb->rcvr_num];
+                    i = mcb.rcb[rcb->rcvr_num].new_freq + mcb.freq_offset[rcb->rcvr_num];
+                    i += mcb.use_up[rcb->rcvr_num] ? mcb.up_xtal : 0;
                     i = rtlsdr_set_center_freq (mcb.rcb[rcb->rcvr_num].rtldev, i);
                     if (i < 0)
                     {
@@ -433,7 +433,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
                      mcb.rcb[rxnum].rcvr_num + 1,
                      mcb.if_bw[rxnum],
                      mcb.freq_offset[rxnum],
-                     mcb.rcb[rxnum].curr_freq + mcb.up_xtal + mcb.freq_offset[rxnum],
+                     mcb.rcb[rxnum].curr_freq + ((mcb.use_up[rxnum])?mcb.up_xtal:0) + mcb.freq_offset[rxnum],
                      mcb.rcb[rxnum].curr_freq + mcb.freq_offset[rxnum],
                      mcb.gain[rxnum] / 10.0,
                      mcb.gain_mode[rxnum] ? "auto" : "manual",
@@ -651,11 +651,11 @@ do_cal_thr_func (void *arg)
         // this is an attempt to check whether the user wants to calibrate
         // from the upconvertor xtal frequency or an HF station
 #if 1
-        if ((mcb.up_xtal) && (mcb.calibrate < 30000000))
+        if (mcb.up_xtal && mcb.use_up[rcb->rcvr_num] && (mcb.calibrate < 30000000))
             i = mcb.up_xtal + mcb.calibrate;
         else
             i = mcb.calibrate;
-        tsleep = 10000 + (abs (i - (rcb->curr_freq + mcb.up_xtal)) / 1000);
+        tsleep = 10000 + (abs (i - (rcb->curr_freq + (mcb.use_up[rcb->rcvr_num]?mcb.up_xtal:0))) / 1000);
 
         // give some time for the dongle to lock in
         rtlsdr_set_center_freq (rcb->rtldev, i);
@@ -679,7 +679,7 @@ do_cal_thr_func (void *arg)
         // reset to the last calibrated freq to reduce the gap between
         // capturing actual data, after the dongle frequencies have settled
         rtlsdr_set_center_freq (rcb->rtldev,
-                                rcb->curr_freq + mcb.up_xtal +
+                                rcb->curr_freq + (mcb.use_up[rcb->rcvr_num]?mcb.up_xtal:0) +
                                 mcb.freq_offset[rcb->rcvr_num]);
 
         //t_print("do_cal_thr_func() STATE 2 rcvr_num: %d\n", rcb->rcvr_num);
@@ -744,9 +744,8 @@ do_cal_thr_func (void *arg)
                 && (i != flip_offset[0][rcb->rcvr_num]))
         {
             rtlsdr_set_center_freq (rcb->rtldev,
-                                    rcb->curr_freq + mcb.up_xtal + i);
-            t_print
-              ("INFO: [%s] cal update, rcvr %d old offset %+5d new offset %+5d new freq %d\n",
+                                    rcb->curr_freq + ((mcb.use_up[rcb->rcvr_num])?mcb.up_xtal:0) + i);
+            t_print ("INFO: [%s] cal update, rcvr %d old offset %+5d new offset %+5d new freq %d\n",
               time_stamp (), rcb->rcvr_num + 1, mcb.freq_offset[rcb->rcvr_num],
               i, rcb->curr_freq + i);
 
@@ -1196,6 +1195,7 @@ usage (char *progname)
             "\t[-f freq offset in hz (defaults 0)]\n"
             "\t[-g gain in tenths of a db (defaults 0 for auto)]\n"
             "\t[-o rcvr order (defaults to 1 - number detected)]\n"
+            "\t[-o use upconvertor (defaults to 1 - use upconvertor if set)]\n"
             "\t[-w IQ_filename (file plays to end then stops)]\n"
             "\t[-W IQ_filename (file plays endlessly in a loop)]\n\n"
             "\tGlobal options:\n"
@@ -1374,13 +1374,13 @@ parse_config (char *conf_file)
             {
                 mcb.up_xtal = atoi (value);
             }
+            else if (!strcmp ("use_up", option))
+            {
+                count = set_option (mcb.use_up, value);
+            }
             else if (!strcmp ("calibrate", option))
             {
                 mcb.calibrate = atoi (value);
-            }
-            else if (!strcmp ("rtl_mode", option))
-            {
-                mcb.rtl_mode = atoi (value);
             }
             else if (!strcmp ("if_bw", option))
             {
@@ -1409,7 +1409,7 @@ int new_protocol_running()
 
 int main (int argc, char *argv[])
 {
-    int j, r, size;
+    int j, r, size, cease = 0;
     int opt, count = 0;
     pthread_t thread;
     uint8_t id[4] = { 0xef, 0xfe, 1, 6 };
@@ -1423,7 +1423,7 @@ int main (int argc, char *argv[])
     unsigned long checksum = 0;
     uint32_t i, last_seqnum = 0xffffffff, seqnum;  // sequence number of received packet
     int udp_retries = 0;
-    int bytes_read, bytes_left;
+    int bytes_read, bytes_left, found = 0;
     uint32_t code;
     uint32_t *code0 = (uint32_t *) buffer;  // fast access to code of first buffer
     double run, off, off2, inc;
@@ -1435,11 +1435,11 @@ int main (int argc, char *argv[])
     int MAC5 = 0x10;
     const int MAC6 = 0xDD;  // P1
     const int MAC6N = 0xDD; // P2
-    int OLDDEVICE = ODEV_HERMES;
-    int NEWDEVICE = NDEV_HERMES;
+    int OLDDEVICE = ODEV_ORION;
+    int NEWDEVICE = NDEV_ORION;
 
     bool loop = true;
-    char serialstr[MAXSTR];
+    char serialstr[MAXSTR] = { '\0' };
     char *progname = basename (argv[0]);
     char vendor[256] = { 0 }, product[256] = { 0 }, serial[256] = { 0 };
 #ifdef _WIN32
@@ -1454,12 +1454,11 @@ int main (int argc, char *argv[])
     mcb.sound_dev[0] = 0;
     conf_file[0] = 0;
     mcb.output_rate = 48000;
-    mcb.serialstr[0] = 0;
+    mcb.serialstr[0] = '\0';
     mcb.signal_multiplier = 5;
     mcb.cal_state = CAL_STATE_0;
     mcb.calibrate = 0;
     mcb.up_xtal = 0;
-    mcb.rtl_mode = RTL_MODE_SKIMMER;
 
     ftime (&test_start_time);
 
@@ -1478,6 +1477,7 @@ int main (int argc, char *argv[])
         mcb.last_gain[i] = 0;
         mcb.freq_offset[i] = 0;
         mcb.last_freq_offset[i] = 0;
+        mcb.use_up[i] = 1;
 
         mcb.rcvr_order[i] = i + 1;
         copy_rcvr[i] = -1;
@@ -1485,7 +1485,7 @@ int main (int argc, char *argv[])
     }
 
     while (loop
-            && ((opt = getopt (argc, argv, "C:c:a:b:d:e:f:g:h:l:m:o:p:r:s:v:W:w:")) !=
+            && ((opt = getopt (argc, argv, "C:c:a:b:d:e:f:g:h:l:m:o:p:r:s:u:v:W:w:")) !=
                 -1))
     {
         switch (opt)
@@ -1553,6 +1553,10 @@ int main (int argc, char *argv[])
             strcpy (mcb.sound_dev, optarg);
             break;
 
+        case 'u':
+            r = set_option (mcb.use_up, optarg);
+            break;
+
         case 'v':
             t_print ("\nGNU %s Version %s Date Built %s %s\n", progname,
                     PRG_VERSION, __TIME__, __DATE__);
@@ -1597,7 +1601,7 @@ int main (int argc, char *argv[])
         t_print ("  config file:\t\t%s\n",
                 (0 == conf_file[0]) ? "none" : conf_file);
         t_print ("  ip address:\t\t%s\n", mcb.ip_addr);
-        if (0 != mcb.serialstr[0])
+        if ('\0' != mcb.serialstr[0])
             t_print ("  eeprom serial string:\t%s\n", mcb.serialstr);
         t_print ("  number of rcvrs:\t%d\n", mcb.total_num_rcvrs);
         t_print ("  hpsdr output rate:\t%d hz\n", mcb.output_rate);
@@ -1635,7 +1639,7 @@ int main (int argc, char *argv[])
         for (i = 0; i < 256; i++)
         {
             rtl_lut[r][i] = (float)((i - 127.4f) / 128.0f) * (256/(r+1) * mcb.signal_multiplier);
-        }
+        } //RRK huh?
     }
 
     pthread_mutex_init (&iqready_lock, NULL);
@@ -1663,6 +1667,26 @@ int main (int argc, char *argv[])
     mcb.fftPlan = fftw_plan_dft_1d (FFT_SIZE, mcb.fftIn,
                                     mcb.fftOut, FFTW_FORWARD, FFTW_ESTIMATE);
 
+    // check for singled out serial number to use exclusively
+    for (i = 0; i < mcb.total_num_rcvrs; i++)
+    {
+        rtlsdr_get_device_usb_strings (i, vendor, product, serial);
+        if (!strcmp(mcb.serialstr, serial))
+        {
+            t_print ("  singled out Rcvr %d S/N %s\n", i + 1, serial);
+            mcb.rcvr_order[0] = mcb.rcvr_order[i];
+            mcb.total_num_rcvrs = 1;
+            found = 1;
+            break;
+        }
+    }
+
+    if (mcb.serialstr[0] != '\0' && !found)
+    {
+        t_print ("\n\nS/N %s Not Found!\n",mcb.serialstr);
+        return (-1);
+    }
+
     for (i = 0; i < mcb.total_num_rcvrs; i++)
     {
         mcb.rcb[i].mcb = &mcb;
@@ -1672,9 +1696,10 @@ int main (int argc, char *argv[])
                 mcb.rcvr_order[i]);
         if (mcb.rcb[i].filename[0] == '\0')
         {
-            rtlsdr_get_device_usb_strings (i, vendor, product, serial);
+            rtlsdr_get_device_usb_strings (mcb.rcvr_order[i] - 1, vendor, product, serial);
             t_print ("  S/N \t\t\t%s\n", serial);
             t_print ("  freq offset\t\t%d hz\n", mcb.freq_offset[i]);
+            if (mcb.up_xtal) t_print ("  using upconverter\t\t%d\n", mcb.use_up[i]);
 
             if (0 != init_rtl (i, mcb.rcvr_order[i] - 1))
             {
