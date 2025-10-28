@@ -142,6 +142,11 @@ extern int clock_nanosleep(clockid_t __clock_id, int __flags,
                            __const struct timespec *__req,
                            struct timespec *__rem);
 
+//downsample_hb.c has better performance but suffers from aliasing
+//#include <../src/downsample_hb.c>
+#include <../src/downsample.c>
+#include <../src/coeff.c>
+
 void
 rtl_sighandler (int signum)
 {
@@ -194,7 +199,7 @@ void *__memalign(size_t align, size_t len)
 	if (!(mem = malloc(len + align-1)))
 		return NULL;
 
-	new = (void *)((uintptr_t)mem + align-1 & -align);
+	new = (void *)((uintptr_t)(mem + align-1) & -align);
 	if (new == mem) return mem;
 
 	header = ((size_t *)mem)[-1];
@@ -208,10 +213,10 @@ void *__memalign(size_t align, size_t len)
 	end = mem + (header & -8);
 	footer = ((size_t *)end)[-2];
 
-	((size_t *)mem)[-1] = header&7 | new-mem;
-	((size_t *)new)[-2] = footer&7 | new-mem;
-	((size_t *)new)[-1] = header&7 | end-new;
-	((size_t *)end)[-2] = footer&7 | end-new;
+	((size_t *)mem)[-1] = (header&7) | (new-mem);
+	((size_t *)new)[-2] = (footer&7) | (new-mem);
+	((size_t *)new)[-1] = (header&7) | (end-new);
+	((size_t *)end)[-2] = (footer&7) | (end-new);
 
 	free(mem);
 	return new;
@@ -219,8 +224,9 @@ void *__memalign(size_t align, size_t len)
 
 int my_posix_memalign(void **res, size_t align, size_t len)
 {
+	void *mem;
 	if (align < sizeof(void *)) return EINVAL;
-	void *mem = __memalign(align, len);
+	mem = __memalign(align, len);
 	if (!mem) return errno;
 	*res = mem;
 	return 0;
@@ -250,12 +256,12 @@ load_packet (struct rcvr_cb *rcb)
     int offset2 = (num_copy_rcvrs > 0) ? frame_offset2[copy_total] : mcb.frame_offset2;
     int offsetx;
     float *out_buf = &rcb->iqSamples[rcb->iqSample_offset * 2];
-    int IQData;
+    int IQIData;
+    short IQSData;
 
     i = 0;
     k = 0;
     b = 16;
-
     pthread_mutex_lock (&send_lock);
 
     // insert data in lower and upper bank for each of the receivers
@@ -270,24 +276,24 @@ load_packet (struct rcvr_cb *rcb)
                 {
                     if (using_IQfiles)
                     {
-                        IQData = ((int)(out_buf[i]));
-                        payload[b++] = (IQData & 0xff00) >> 8;
-                        payload[b++] = (IQData & 0xff0000) >> 16;
-                        payload[b++] = (IQData & 0xff000000) >> 24;
-                        IQData = ((int)(out_buf[i+1]));
-                        payload[b++] = (IQData & 0xff00) >> 8;
-                        payload[b++] = (IQData & 0xff0000) >> 16;
-                        payload[b++] = (IQData & 0xff000000) >> 24;
+                        IQIData = ((int)(out_buf[i]));
+                        payload[b++] = (IQIData & 0xff00) >> 8;
+                        payload[b++] = (IQIData & 0xff0000) >> 16;
+                        payload[b++] = (IQIData & 0xff000000) >> 24;
+                        IQIData = ((int)(out_buf[i+1]));
+                        payload[b++] = (IQIData & 0xff00) >> 8;
+                        payload[b++] = (IQIData & 0xff0000) >> 16;
+                        payload[b++] = (IQIData & 0xff000000) >> 24;
                     }
                     else
                     {
-                        IQData = (int) out_buf[i];
-                        payload[b++] = IQData >> 8;
-                        payload[b++] = IQData & 0xff;
+                        IQSData = (short) out_buf[i];
+                        payload[b++] = IQSData >> 8;
+                        payload[b++] = IQSData & 0xff;
                         b++;
-                        IQData = (int) out_buf[i + 1];
-                        payload[b++] = IQData >> 8;
-                        payload[b++] = IQData & 0xff;
+                        IQSData = (short) out_buf[i + 1];
+                        payload[b++] = IQSData >> 8;
+                        payload[b++] = IQSData & 0xff;
                         b++;
                     }
 
@@ -338,6 +344,7 @@ hpsdrsim_sendiq_thr_func (void *arg)
     while (!do_exit)
     {
         if (!running) rcb->iqSample_offset = rcb->iqSamples_remaining = 0;
+
         samps_packet = (num_copy_rcvrs > 0)
                        ? nsamps_packet[(mcb.active_num_rcvrs - 1) + num_copy_rcvrs]
                        : mcb.nsamps_packet;
@@ -350,6 +357,14 @@ hpsdrsim_sendiq_thr_func (void *arg)
         rcvr_flags &= ~rcb->rcvr_mask;
         pthread_mutex_unlock (&iqready_lock);
 
+#if 0
+for(i=0; i<1024; i++) {
+  printf("I:%d IQ:%f, ",i, rcb->iq_buf[i]);
+}
+for(i=0; i<1024; i++) {
+  printf("OFF:%d IQ:%f, ",samps_packet, rcb->iqSamples[i]);
+}
+#endif
         // can happen when switching between rcvr numbers
         if (rcb->iqSamples_remaining < 0)
             rcb->iqSamples_remaining = 0;
@@ -407,11 +422,15 @@ hpsdrsim_sendiq_thr_func (void *arg)
             if ((mcb.rcb[rcb->rcvr_num].new_freq) && (mcb.rcb[rcb->rcvr_num].new_freq != 110000000))
             {
                 ftime (&mcb.freq_ttime[rcb->rcvr_num]);
+#if 0 // limit changing freq too rapidly
                 if ((((((mcb.freq_ttime[rcb->rcvr_num].time * 1000) +
                         mcb.freq_ttime[rcb->rcvr_num].millitm) -
                         (mcb.freq_ltime[rcb->rcvr_num].time * 1000) +
                         mcb.freq_ltime[rcb->rcvr_num].millitm)) > 200)
                         || hpsdr_sequence < 1000000)
+#else
+                if (1)
+#endif
                 {
                     i = mcb.rcb[rcb->rcvr_num].new_freq + mcb.freq_offset[rcb->rcvr_num];
                     i += mcb.use_up[rcb->rcvr_num] ? mcb.up_xtal : 0;
@@ -496,7 +515,6 @@ void update_config()
     int i, r;
     for (i = 0; i < mcb.total_num_rcvrs; i++)
     {
-
         mcb.last_if_bw[i] = mcb.if_bw[i];
         mcb.last_gain[i] = mcb.gain[i];
         mcb.last_gain_mode[i] = mcb.gain_mode[i];
@@ -795,7 +813,7 @@ EXIT_DO_CAL:
 void
 rtlsdr_callback (unsigned char *buf, uint32_t len, void *ctx)
 {
-    int i;
+    int i, j;
     struct rcvr_cb *rcb = (struct rcvr_cb *) ctx;
     float dcI, dcQ;
 
@@ -879,11 +897,11 @@ rtlsdr_callback (unsigned char *buf, uint32_t len, void *ctx)
     // to the beginning of the buffer. This is because of the FIR filter length, the
     // filtering routine takes in 'filter_length' more samples than it outputs or
     // coefficient length * 2 for I&Q (stereo) input samples.
+#if 1                           // remove DC component
     for (i = 0; i < RTL_READ_COUNT; i += 2)
     {
-#if 1                           // remove DC component
-        dcI = rtl_lut[last_rate][buf[i + 1]] + dcIlast[rcb->rcvr_num] * 0.9999f;
-        dcQ = rtl_lut[last_rate][buf[i]] + dcQlast[rcb->rcvr_num] * 0.9999f;
+        dcI = rtl_lut[last_rate][buf[i]] + dcIlast[rcb->rcvr_num] * 0.9999f;
+        dcQ = rtl_lut[last_rate][buf[i+1]] + dcQlast[rcb->rcvr_num] * 0.9999f;
         rcb->iq_buf[i] = dcI - dcIlast[rcb->rcvr_num];
         rcb->iq_buf[i + 1] = dcQ - dcQlast[rcb->rcvr_num];
         dcIlast[rcb->rcvr_num] = dcI;
@@ -894,7 +912,6 @@ rtlsdr_callback (unsigned char *buf, uint32_t len, void *ctx)
 #endif
     }
 
-    // below pthread_mutex_lock may have to be before loop above? TODO
     pthread_mutex_lock (&iqready_lock);
     rcvr_flags |= rcb->rcvr_mask;
     pthread_cond_broadcast (&iqready_cond);
@@ -1362,10 +1379,6 @@ parse_config (char *conf_file)
             {
                 strcpy (mcb.sound_dev, value);
             }
-            else if (!strcmp ("signal_multiplier", option))
-            {
-                mcb.signal_multiplier = atoi (value);
-            }
             else if (!strcmp ("total_num_rcvrs", option))
             {
                 mcb.total_num_rcvrs = atoi (value);
@@ -1409,7 +1422,7 @@ int new_protocol_running()
 
 int main (int argc, char *argv[])
 {
-    int j, r, size, cease = 0;
+    int i, j, r, size, cease = 0;
     int opt, count = 0;
     pthread_t thread;
     uint8_t id[4] = { 0xef, 0xfe, 1, 6 };
@@ -1421,7 +1434,7 @@ int main (int argc, char *argv[])
     int num_rcvrs, yes = 1;
     uint8_t *bp;
     unsigned long checksum = 0;
-    uint32_t i, last_seqnum = 0xffffffff, seqnum;  // sequence number of received packet
+    uint32_t last_seqnum = 0xffffffff, seqnum;  // sequence number of received packet
     int udp_retries = 0;
     int bytes_read, bytes_left, found = 0;
     uint32_t code;
@@ -1451,13 +1464,14 @@ int main (int argc, char *argv[])
 #endif
 
     // set defaults
+    mcb.length_fir = 32;
     mcb.sound_dev[0] = 0;
     conf_file[0] = 0;
     mcb.output_rate = 48000;
     mcb.serialstr[0] = '\0';
-    mcb.signal_multiplier = 5;
     mcb.cal_state = CAL_STATE_0;
     mcb.calibrate = 0;
+    mcb.signal_multiplier = 5;
     mcb.up_xtal = 0;
 
     ftime (&test_start_time);
@@ -1537,10 +1551,6 @@ int main (int argc, char *argv[])
             mcb.up_xtal = atoi (optarg);
             break;
 
-        case 'm':
-            mcb.signal_multiplier = atoi (optarg);
-            break;
-
         case 'o':
             r = set_option (mcb.rcvr_order, optarg);
             break;
@@ -1603,9 +1613,9 @@ int main (int argc, char *argv[])
         t_print ("  ip address:\t\t%s\n", mcb.ip_addr);
         if ('\0' != mcb.serialstr[0])
             t_print ("  eeprom serial string:\t%s\n", mcb.serialstr);
+        t_print ("  length of fir:\t%d\n", mcb.length_fir);
         t_print ("  number of rcvrs:\t%d\n", mcb.total_num_rcvrs);
         t_print ("  hpsdr output rate:\t%d hz\n", mcb.output_rate);
-        t_print ("  signal multiplier\t%d\n", mcb.signal_multiplier);
         if (mcb.calibrate)
             t_print ("  calibration freq:\t%d hz\n", mcb.calibrate);
         if (mcb.up_xtal)
@@ -1632,14 +1642,64 @@ int main (int argc, char *argv[])
 
     format_payload ();
 
-    // create a lookup table for float values for the 4 sample rates
-    // increase amplitude for lower bands due to increased decimation
-    for (r = 0; r < 4; r++)
+	switch(mcb.length_fir) {
+	case 32:
+		mcb.coeff_48 = coeff1536_48_H_32;
+		mcb.coeff_96 = coeff1536_96_H_32;
+		mcb.coeff_192 = coeff1536_192_H_32;
+		mcb.coeff_384 = coeff1536_384_H_32;
+		break;
+
+	case 64:
+		mcb.coeff_48 = coeff1536_48_H_64;
+		mcb.coeff_96 = coeff1536_96_H_64;
+		mcb.coeff_192 = coeff1536_192_H_64;
+		mcb.coeff_384 = coeff1536_384_H_64;
+		break;
+	}
+
+	mcb.coeff_768 = coeff3072_768_H_16;
+
+	r = float_malloc_align((void**) & (mcb.align1536_48_H), 16,
+	                   mcb.length_fir * 2 * sizeof(float));
+	r |= float_malloc_align((void**) & (mcb.align1536_96_H), 16,
+	                    mcb.length_fir * 2 * sizeof(float));
+	r |= float_malloc_align((void**) & (mcb.align1536_192_H), 16,
+	                    mcb.length_fir * 2 * sizeof(float));
+	r |= float_malloc_align((void**) & (mcb.align1536_384_H), 16,
+	                    mcb.length_fir * 2 * sizeof(float));
+	r |= float_malloc_align((void**) & (mcb.align3072_768_H), 16,
+	                    COEFF3072_H_16_LENGTH * 2 * sizeof(float));
+
+	if(r != 0) {
+		printf("failed to allocate coeff aligned memory: r=%d\n", r);
+		return (r);
+	}
+
+	// rearrange coeff table for SIMD operations
+	for(i = 0; i < mcb.length_fir; i++) {
+		mcb.align1536_48_H[2 * i + 0] =
+		  mcb.align1536_48_H[2 * i + 1] = mcb.coeff_48[i];
+		mcb.align1536_96_H[2 * i + 0] =
+		  mcb.align1536_96_H[2 * i + 1] = mcb.coeff_96[i];
+		mcb.align1536_192_H[2 * i + 0] =
+		  mcb.align1536_192_H[2 * i + 1] = mcb.coeff_192[i];
+		mcb.align1536_384_H[2 * i + 0] =
+		  mcb.align1536_384_H[2 * i + 1] = mcb.coeff_384[i];
+	}
+
+	for(i = 0; i < COEFF3072_H_16_LENGTH; i++) {
+		mcb.align3072_768_H[2 * i + 0] =
+		  mcb.align3072_768_H[2 * i + 1] = mcb.coeff_768[i];
+	}
+
+    // create a lookup table for float values, 4 for different samplerates
+    for (r = 0; r < 4; r++) 
     {
-        for (i = 0; i < 256; i++)
-        {
+        for (i = 0; i < 256; i++) 
+        {    
             rtl_lut[r][i] = (float)((i - 127.4f) / 128.0f) * (256/(r+1) * mcb.signal_multiplier);
-        } //RRK huh?
+        }
     }
 
     pthread_mutex_init (&iqready_lock, NULL);
@@ -1721,8 +1781,10 @@ int main (int argc, char *argv[])
         }
         else
         {
-            r = float_malloc_align ((void **) &(mcb.rcb[i].iq_buf), 16,
-                                    RTL_READ_COUNT * sizeof (float));
+		r = float_malloc_align((void**) & (mcb.rcb[i].iq_buf), 16,
+		                   (RTL_READ_COUNT + (COEFF3072_H_16_LENGTH * 2)) * sizeof(float));
+		r |= float_malloc_align((void**) & (mcb.rcb[i].iq_buf_final), 16,
+		                    ((RTL_READ_COUNT / 2) + (mcb.length_fir * 2)) * sizeof(float));
         }
 
         if (r != 0)
@@ -2018,6 +2080,19 @@ int main (int argc, char *argv[])
 
     close(sock_udp);
 
+    // clean up
+    for(i = 0; i < mcb.total_num_rcvrs; i++) {
+           float_free_align(mcb.rcb[i].iq_buf);
+           float_free_align(mcb.rcb[i].iq_buf_final);
+           //hangs rtlsdr_close(mcb.rcb[i].rtldev);
+    }
+
+    float_free_align(mcb.align1536_48_H);
+    float_free_align(mcb.align1536_96_H);
+    float_free_align(mcb.align1536_192_H);
+    float_free_align(mcb.align1536_384_H);
+    float_free_align(mcb.align3072_768_H);
+
 #ifndef _WIN32
     if (mcb.sound_dev[0])
        close_local_sound ();
@@ -2039,11 +2114,11 @@ void process_ep2(int frame)
     for (i = 0; i < HPSDR_FRAME_LEN; i++)
     {
         t_print ("%4d:%2x ", i, buffer[i]);
-
         if (!((i + 1) % 8))
             t_print ("\n");
     }
 #endif
+
     // REMEMBER, 2 USB packets of data here (audio, C0, ...)
     C0_1 = buffer[11] & 0xFE;
     C0_2 = buffer[523] & 0xFE;
@@ -2204,14 +2279,13 @@ void *handler_ep6(void *arg)
             pthread_cond_wait (&send_cond, &send_lock);
         }
 
-#if 0                           // dump the frame for analysis
-        if (iloop++ == 100)
+#if 0   // dump a frame for analysis
+        if (counter == 100)
         {
-            iloop = 0;
             t_print ("rcvrs_mask:%x send_flags:%d\n", mcb.rcvrs_mask,
                     send_flags);
 
-            for (i = 0; i < HPSDR_FRAME_LEN; i++)
+            for (int i = 0; i < HPSDR_FRAME_LEN; i++)
             {
                 t_print ("%4d:%2x ", i, payload[i]);
 

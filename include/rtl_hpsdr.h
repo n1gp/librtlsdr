@@ -83,9 +83,8 @@
 #define RTL_BANDWIDTH 300000   // Tuner set to 400 Khz IF BW 
 #define DOWNSAMPLE_192 8    // downsample value used to get 192khz
 #define RTL_SAMPLE_RATE (192000 * DOWNSAMPLE_192)
-#define RTL_READ_COUNT (16384 * DOWNSAMPLE_192)
+#define RTL_READ_COUNT (2048 * DOWNSAMPLE_192)
 #define MAX_RCVRS 7
-#define IQ_FRAME_DATA_LEN 63
 #define MAXSTR 128
 #define FFT_SIZE 65536
 #define CAL_STATE_EXIT  MAX_RCVRS
@@ -96,6 +95,19 @@
 
 #define RTL_MODE_SKIMMER 0
 #define RTL_MODE_WSPR    1
+
+#define COEFF3072_H_16_LENGTH 16
+#define COEFF1536_H_32_LENGTH 32
+#define COEFF1536_H_64_LENGTH 64
+float coeff3072_768_H_16[COEFF3072_H_16_LENGTH];
+float coeff1536_384_H_32[COEFF1536_H_32_LENGTH];
+float coeff1536_192_H_32[COEFF1536_H_32_LENGTH];
+float coeff1536_96_H_32[COEFF1536_H_32_LENGTH];
+float coeff1536_48_H_32[COEFF1536_H_32_LENGTH];
+float coeff1536_384_H_64[COEFF1536_H_64_LENGTH];
+float coeff1536_192_H_64[COEFF1536_H_64_LENGTH];
+float coeff1536_96_H_64[COEFF1536_H_64_LENGTH];
+float coeff1536_48_H_64[COEFF1536_H_64_LENGTH];
 
 typedef struct {
     char     chunk_id[4];
@@ -122,6 +134,7 @@ struct main_cb {
         int frame_offset2;
         int output_rate;
         int up_xtal;
+	int length_fir;
         char sound_dev[MAXSTR];
         char ip_addr[MAXSTR];
         char serialstr[MAXSTR];
@@ -157,6 +170,18 @@ struct main_cb {
         struct timeb freq_ltime[MAX_RCVRS];
         struct timeb freq_ttime[MAX_RCVRS];
 
+	// filter coefficient table pointers
+	float* align1536_48_H;
+	float* align1536_96_H;
+	float* align1536_192_H;
+	float* align1536_384_H;
+	float* align3072_768_H;
+	float* coeff_48;
+	float* coeff_96;
+	float* coeff_192;
+	float* coeff_384;
+	float* coeff_768;
+
         fftw_complex fftIn[sizeof(fftw_complex) * FFT_SIZE];
         fftw_complex fftOut[sizeof(fftw_complex) * FFT_SIZE];
         fftw_plan fftPlan;
@@ -178,8 +203,8 @@ struct main_cb {
                 int iqSamples_remaining;
                 float iqSamples[(RTL_READ_COUNT + (IQ_FRAME_DATA_LEN * 2))];
 
-                float rtl_buf[RTL_READ_COUNT];
                 float* iq_buf;
+                float* iq_buf_final;
                 char filename[MAX_BUFFER_LEN];
         } rcb[MAX_RCVRS];
 };
