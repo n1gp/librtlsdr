@@ -1,1 +1,0 @@
-#define GITVERSION "@GIT_COMMIT_HASH@"

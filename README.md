@@ -1,6 +1,11 @@
 rtl-sdr
 turns your Realtek RTL2832 based DVB dongle into a SDR receiver
 
+NOTE: There is a simplified version that uses protocol2 with sample
+      rates up to 1536Ksps. Select branch 'protocol2' for that.
+      git checkout protocol2
+
+
 LINUX:
 cd build
 cmake ..
@@ -8,7 +13,6 @@ make -j4
 sudo make install
 
 rtl_hpsdr -h   (for help)
-
 
 
 WINDOWS (built on Linux using MingW)
