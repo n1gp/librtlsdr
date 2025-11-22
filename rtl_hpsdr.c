@@ -1,9 +1,8 @@
 /* Copyright (C)
 *   10/2025 - Rick Koch, N1GP
-*   Wrote rfspace_hpsdr using various open sources on the internet.
-*     https://github.com/kgarrels/SoapySDR14
-*     Ian (G7GHH), sdr-14 code examples
+*   Wrote rtl_hpsdr using various open sources on the internet.
 *     Christoph, https://github.com/dl1ycf/pihpsdr
+*     https://github.com/steve-m/librtlsdr
 *
 *   This program is free software: you can redistribute it and/or modify
 *   it under the terms of the GNU General Public License as published by
@@ -22,7 +21,7 @@
 
 /*
  * This program simulates an HPSDR Hermes board using USB data from
- * an RFSPACE SDR-14 or SDR-IQ radio.
+ * an RTL-SDR dongle.
  */
 
 #include "rtl_hpsdr.h"
@@ -196,10 +195,10 @@ void * rtl_read_thr_func (void *arg)
     struct rcvr_cb *rcb = (struct rcvr_cb *) arg;
     int i = rcb->rcvr_num;
 
-    t_print("ENTERING rtl_read_thr_func() rcvr %d\n", i+1);
+    t_print("Starting rtl_read_thr_func() rcvr %d\n", i+1);
     rtlsdr_read_async (rcb->rtldev, rtlsdr_callback,
                        (void *) (&mcb.rcb[i]), 2, RTL_READ_COUNT);
-    t_print("EXITING rtl_read_thr_func() rcvr %d\n", i+1);
+    t_print("Ending rtl_read_thr_func() rcvr %d\n", i+1);
     pthread_exit (NULL);
 }
 
@@ -276,21 +275,6 @@ int init_rtl (int rcvr_num, int dev_index)
         return (-1);
     }
 
-    if (mcb.gain == 0) {
-        // Enable Auto Gain Mode
-        r = rtlsdr_set_tuner_gain_mode (rtldev, 0);
-        if (r < 0) {
-            printf ("WARNING: Failed to set tuner gain to auto!\n");
-            return (-1);
-        } else printf ("  tuner gain\t\tauto\n");
-    } else {
-        i = get_nearest_tuner_gain(rtldev, mcb.gain);
-        r = rtlsdr_set_tuner_gain(rtldev, i);
-        if (r < 0) {
-            printf ("WARNING: Failed to set tuner manual gain!\n");
-            return (-1);
-        } else printf ("  nearest tuner gain\t\t%0.2f dB\n", i/10.0);
-    }
 
 #if 0 // maybe do something based on tuner type?
 int tuner_type = rtlsdr_get_tuner_type(rtldev);
@@ -312,12 +296,12 @@ enum rtlsdr_tuner {
     if (r < 0)
         t_print ("WARNING: Failed to set tuner freq!\n");
 
-    r = rtlsdr_set_direct_sampling (rtldev, mcb.direct_mode[rcvr_num]);
+    r = rtlsdr_set_direct_sampling (rtldev, mcb.direct_mode);
     if (r < 0) {
         t_print ("WARNING: Failed to set direct sampling!\n");
         return (-1);
     } else
-        t_print ("  direct sampling\t%d\n", mcb.direct_mode[rcvr_num]);
+        t_print ("  direct sampling\t%d\n", mcb.direct_mode);
 
     //r = rtlsdr_set_agc_mode (rtldev, mcb.agc_mode[rcvr_num]);
     r = rtlsdr_set_agc_mode (rtldev, mcb.agc_mode);
@@ -328,6 +312,24 @@ enum rtlsdr_tuner {
         t_print ("  auto agc mode\t%s\n",
                  (mcb.agc_mode) ? "on" : "off");
 
+    if (0 == mcb.gain) {
+        r = rtlsdr_set_tuner_gain_mode(rtldev, 0); 
+        if (r < 0)
+            t_print("WARNING: Failed to enable automatic gain.\n");
+        else
+            t_print("  tuner gain\t\tautomatic\n");
+    } else {
+        r = rtlsdr_set_tuner_gain_mode(rtldev, 1); 
+        if (r < 0)
+            t_print("WARNING: Failed to enable manual gain.\n");
+
+        i = get_nearest_tuner_gain(rtldev, mcb.gain);
+        r = rtlsdr_set_tuner_gain(rtldev, i);
+        if (r < 0)
+            t_print("WARNING: Failed to set tuner gain.\n");
+        else
+            t_print("  tuner gain\t\t%g dB\n", i/10.0);
+    }
     r = rtlsdr_set_bias_tee (rtldev, mcb.bias_t[rcvr_num]);
     if (r < 0) {
         t_print ("WARNING: Failed to set bias T!\n");
@@ -364,7 +366,7 @@ void * hpsdrsim_sendiq_thr_func (void *arg)
 
     rcb->iqSample_offset = rcb->iqSamples_remaining = 0;
 
-    t_print("ENTERING hpsdrsim_sendiq_thr_func() rcvr %d...\n", rcb->rcvr_num+1);
+    t_print("Starting hpsdrsim_sendiq_thr_func() rcvr %d...\n", rcb->rcvr_num+1);
     while (!do_exit) {
         pthread_mutex_lock (&iqready_lock);
         while (!(rcvr_flags & rcb->rcvr_mask)) {
@@ -408,7 +410,7 @@ void * hpsdrsim_sendiq_thr_func (void *arg)
             rcb->iqSample_offset = 0;
         }
 
-        if (rcb->new_freq == 162525) {rtlsdr_set_center_freq (rcb->rtldev, 162525000);rcb->new_freq = 0;}
+        if (rcb->new_freq == 162525) {rtlsdr_set_center_freq (rcb->rtldev, 162525000);rcb->new_freq = 0;} //RRK
         else if (rcb->new_freq) {
             clock_gettime(CLOCK_REALTIME, &mcb.freq_ttime[rcb->rcvr_num]);
             now = mcb.freq_ttime[rcb->rcvr_num].tv_sec + 1.0E-9 * mcb.freq_ttime[rcb->rcvr_num].tv_nsec;
@@ -429,7 +431,7 @@ void * hpsdrsim_sendiq_thr_func (void *arg)
     }
 
     pthread_exit (NULL);
-    t_print("EXITING hpsdrsim_sendiq_thr_func() rcvr_mask%d...\n", rcb->rcvr_mask);
+    t_print("Ending hpsdrsim_sendiq_thr_func() rcvr_mask%d...\n", rcb->rcvr_mask);
 }
 
 void hpsdrsim_stop_threads ()
@@ -481,10 +483,10 @@ int main (int argc, char *argv[])
 
     mcb.agc_mode = 0;
     mcb.gain = 0;
+    mcb.direct_mode = 0;
 
     // Initialize per receiver config settings
     for (i = 0; i < MAX_RCVRS; i++) {
-        mcb.direct_mode[i] = 0;
         mcb.bias_t[i] = 0;
         mcb.freq_offset[i] = 0;
         mcb.use_up[i] = 0;
@@ -495,13 +497,14 @@ int main (int argc, char *argv[])
         firdecim_crcf_set_scale(mcb.rcb[i].decim, 1.0f/(float)M);
     }
 
-    while((CmdOption = getopt(argc, argv, ":a:C:g:r:u:h")) != -1) {
+    while((CmdOption = getopt(argc, argv, ":a:C:d:g:r:u:h")) != -1) {
         switch(CmdOption) {
         case 'h':
             printf("Usage: %s <optional arguments>\n", basename(argv[0]));
             printf("optional arguments:\n");
             printf("-a set agc_mode (1-on 0-off))\n");
             printf("-C freq in hz in which to calibrate dongles\n");
+            printf("-d direct sampling mode 0|1|2|3 (defaults 0 or auto, 1=I 2=Q 3=NOMOD\n");
             printf("-g tuner gain in 1/10's dB (0-auto))\n");
             printf("-h help (prints this usage)\n");
             printf("-r number of rcvrs to use (defaults to all detected)\n");
@@ -514,6 +517,9 @@ int main (int argc, char *argv[])
             break;
         case 'C':
             mcb.calibrate = atoi (optarg);
+            break;
+        case 'd':
+            mcb.direct_mode = atoi (optarg);
             break;
         case 'g':
             mcb.gain = atoi (optarg);
@@ -563,8 +569,7 @@ int main (int argc, char *argv[])
     // increase amplitude for lower bands due to increased decimation
     for (r = 0; r < 6; r++) {
         for (i = 0; i < 256; i++) {
-            rtl_lut[r][i] = (float)((i - 127.4f) / 128.0f) * 500 * (256/(r+1));
-            //RRK rtl_lut[r][i] = (float)((i - 127.4f) / 128.0f) * 2500 * (256/(r+1));
+            rtl_lut[r][i] = (float)((i - 127.4f) / 128.0f) * 200 * (256/(r+1));
         }
     }
 
@@ -734,7 +739,6 @@ static int ddc_port = 1025;
 static int mic_port = 1026;
 static int hp_port = 1027;
 static int ddc0_port = 1035;
-static float rxatt0;
 static unsigned char pbuf[238*6];
 
 static pthread_t highprio_thread_id = 0;
@@ -890,11 +894,17 @@ void *highprio_thread(void *data)
         rc = buffer[1443];
         if (rc != stepatt0) {
             stepatt0 = rc;
-            rxatt0 = (float)(-stepatt0);
-            //t_print("HP: StepAtt0 = %d RxAtten0 = %f\n", stepatt0, rxatt0);
-            for (i = 0; i < MAX_RCVRS; i++) // set all the same, for now
-                rtlsdr_set_tuner_gain (mcb.rcb[i].rtldev, 0);
-            //rtlsdr_set_tuner_gain (mcb.rcb[i].rtldev, stepatt0*10);
+            //t_print("HP: StepAtt0 = %d\n", stepatt0);
+            if (stepatt0 != 0) {
+                for (i = 0; i < mcb.total_num_rcvrs; i++) { // set all the same, for now
+                    // convert attn to gain
+                    rc = get_nearest_tuner_gain(mcb.rcb[i].rtldev, (31 - stepatt0) * 16);
+                    mcb.gain = rc;
+                    rc = rtlsdr_set_tuner_gain(mcb.rcb[i].rtldev, mcb.gain);
+                    if (rc < 0)
+                        t_print("WARNING: Failed to set tuner gain.\n");
+                }
+            }
         }
 
         rc = (buffer[4] >> 0) & 0x01;
@@ -1142,7 +1152,7 @@ void *rx_thread(void *data)
         }
         pthread_mutex_unlock (&send_lock);
 
-        memcpy(p, pbuf, 1428);
+        memcpy(p, pbuf, 1428); // I-Q data
 
 #if 0
         if (seqnum == 100) {

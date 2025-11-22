@@ -1,5 +1,5 @@
-#ifndef _RFSPACE_HPSDR_H
-#define _RFSPACE_HPSDR_H
+#ifndef _RTL_HPSDR_H
+#define _RTL_HPSDR_H
 
 /* Copyright (C)
 *
@@ -59,10 +59,11 @@
 #define IQ_FRAME_DATA_LEN 63
 #define RTL_SAMPLE_RATE 1536000
 #define RTL_READ_COUNT 4096
-#define RTL_BANDWIDTH 300000   // Tuner set to 400 Khz IF BW
+#define RTL_BANDWIDTH 1600000   // Tuner set to 400 Khz IF BW
 #define MAX_RCVRS 7
 #define IQ_FRAME_DATA_LEN 63
 #define MAXSTR 128
+#define NDEV_HERMES 1
 
 struct main_cb {
     int total_num_rcvrs;
@@ -76,7 +77,7 @@ struct main_cb {
     // the last array member is used to remember last settings
     int agc_mode;
     int bias_t[MAX_RCVRS + 1];
-    int direct_mode[MAX_RCVRS + 1];
+    int direct_mode;
     int gain;
     int calibrate;
     int freq_offset[MAX_RCVRS + 1];
@@ -109,41 +110,10 @@ struct main_cb {
 
 void load_packet(struct rcvr_cb* rcb);
 void sdr_sighandler(int signum);
-
 void* hpsdrsim_sendiq_thr_func(void* arg);
-void hpsdrsim_stop_threads();
-
-#define ODEV_NONE          999
-#define ODEV_HERMES          1
-#define ODEV_ORION           5
-
-#define NDEV_NONE          999
-#define NDEV_HERMES          1
-#define NDEV_ORION           4
-
-//##################### NEW PROTOCOL STUFF
-#define LENNOISE 1536000
-#define NOISEDIV (RAND_MAX / 768000)
-#define OLDRTXLEN 64512
-#define NEWRTXLEN 64320
-#define IM3a  0.60
-#define IM3b  0.20
-
-//
-// Forward declarations for new protocol stuff
-//
+void hpsdrsim_stop_threads(void);
+int new_protocol_running(void);
 void new_protocol_general_packet(unsigned char *buffer);
-int  new_protocol_running(void);
-void *mic_thread(void *data);
-void *rx_thread(void *data);
-void *ddc_specific_thread(void *data);
-void *highprio_thread(void *data);
-void load_packet (struct rcvr_cb *rcb);
-
-// using clock_nanosleep of librt
-extern int clock_nanosleep(clockid_t __clock_id, int __flags,
-                           __const struct timespec *__req,
-                           struct timespec *__rem);
 
 //
 // message printing
@@ -152,4 +122,4 @@ extern int clock_nanosleep(clockid_t __clock_id, int __flags,
 void t_print(const char *format, ...);
 void t_perror(const char *string);
 
-#endif // _RFSPACE_HPSDR_H
+#endif // _RTL_HPSDR_H
